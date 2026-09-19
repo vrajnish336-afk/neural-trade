@@ -2,7 +2,7 @@ import uuid
 import json
 import logging
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.core.models import MarketBar
 from app.forecasting.models import ForecastModel, ForecastResult, ForecastRecord
@@ -47,7 +47,7 @@ class ForecastingService:
             
         # 2. Data Loading
         provider = CsvHistoricalDataProvider(self.data_dir)
-        bars = provider.get_historical_bars(symbol, timeframe)
+        bars = provider.get_historical_bars(symbol, timeframe, start_time=datetime(1970, 1, 1, tzinfo=timezone.utc))
         if not bars:
             return None
             
