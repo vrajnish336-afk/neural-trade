@@ -90,7 +90,7 @@ def test_f14_future_data_corruption():
     
 def test_f18_unavailable_advanced_model_fallback():
     adapter = KronosAdapter()
-    assert adapter.model_name == "Kronos_ZeroShot"
+    assert adapter.model_name == "Kronos_Local"
     # If not available, it raises RuntimeError if called directly
     if not adapter.is_available():
         with pytest.raises(RuntimeError):

@@ -188,7 +188,7 @@ class DecisionOrchestrator:
         forecast_dir = "UNKNOWN"
         forecast_unc = 1.0
         try:
-            forecast_rec = self.forecasting_service.generate_forecast(symbol, "1D", min(100, len(bars)), 5)
+            forecast_rec = self.forecasting_service.generate_forecast(symbol, "1D", min(100, len(bars)), 5, model_choice="kronos")
             if forecast_rec and forecast_rec.predicted_values_json:
                 import json
                 preds = json.loads(forecast_rec.predicted_values_json)
@@ -227,6 +227,26 @@ class DecisionOrchestrator:
             decision_val = signal.direction
             rationale = signal.reason
             confidence = signal.confidence
+            
+            # 6.1 Kronos Secondary Evidence (bounded, deterministic)
+            # Forecast agreement/disagreement adjusts confidence by at most 0.05.
+            # UNKNOWN or unavailable forecast has zero effect.
+            KRONOS_MAX_BOOST = 0.05
+            forecast_agrees = (
+                (forecast_dir == "UP" and signal.direction == "LONG") or
+                (forecast_dir == "DOWN" and signal.direction == "SHORT")
+            )
+            forecast_conflicts = (
+                (forecast_dir == "UP" and signal.direction == "SHORT") or
+                (forecast_dir == "DOWN" and signal.direction == "LONG")
+            )
+            if forecast_agrees:
+                confidence = min(1.0, confidence + KRONOS_MAX_BOOST)
+                rationale += f" [Kronos forecast confirms {forecast_dir}]"
+            elif forecast_conflicts:
+                confidence = max(0.0, confidence - KRONOS_MAX_BOOST)
+                rationale += f" [Kronos forecast conflicts: {forecast_dir}]"
+            # else: forecast_dir is UNKNOWN — no adjustment
             
             risk_decision = self.risk_engine.evaluate_trade(
                 signal=signal,
