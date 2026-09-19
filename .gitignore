@@ -1,0 +1,41 @@
+venv/
+env/
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+data/*.db
+!data/.gitkeep
+logs/*.log
+!logs/.gitkeep
+.vscode/
+.idea/
+
+# Added by Agent Checkpoint Audit
+# Virtual Environment
+# Secrets and Env Configs
+.env.*
+secrets.json
+# Databases and Backups
+data/*.sqlite
+data/*.sqlite.bak
+data/*.db.bak
+*.sqlite
+*.sqlite3
+*.db.bak
+# Caches and Logs
+# Editor/OS specific
+.DS_Store
+Thumbs.db
+
+# Added by Safe Git Baseline Audit
+*.egg-info/
+scratch/
+wf_results.json
+reports/*.json
+app/strategies/kronos/research/experiment_manifest.json
