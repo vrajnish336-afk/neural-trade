@@ -122,8 +122,59 @@ class LessonExtractor:
 
 
 class EvolutionProposalEngine:
-    def __init__(self, evo_repo: Optional[PaperEvolutionRepository] = None):
+    def __init__(self, evo_repo: Optional[PaperEvolutionRepository] = None, auto_rehydrate: bool = True):
         self.evo_repo = evo_repo or PaperEvolutionRepository()
+        if auto_rehydrate:
+            self.rehydrate_applied_proposals()
+
+    def rehydrate_applied_proposals(self) -> int:
+        """
+        Rehydrates human-approved APPLIED proposals from SQLite into in-memory config on startup.
+        Orders by created_at timestamp so newer applied proposals supersede older ones.
+        Safely validates parameter safety and skips unapproved, rolled-back, or invalid proposals.
+        """
+        try:
+            proposals = self.evo_repo.get_proposals()
+        except Exception as e:
+            logger.error(f"Failed to fetch proposals for rehydration: {e}")
+            return 0
+
+        applied = []
+        for p in proposals:
+            status_val = p.status.value if hasattr(p.status, 'value') else str(p.status)
+            if status_val == "APPLIED":
+                applied.append(p)
+
+        if not applied:
+            return 0
+
+        # Sort by created_at ascending so later applied proposals overwrite earlier ones
+        applied.sort(key=lambda p: p.created_at)
+
+        rehydrated_count = 0
+        for p in applied:
+            # 1. Strict parameter safety check
+            is_safe = p.affected_parameter in SAFE_PARAMETERS or p.affected_parameter.endswith("_MIN_SCORE")
+            if not is_safe:
+                logger.warning(f"Rehydration skipped unsafe parameter: {p.affected_parameter}")
+                continue
+
+            # 2. Value safety and type check
+            val = p.proposed_value
+            if val is None or not isinstance(val, (int, float)):
+                logger.warning(f"Rehydration skipped invalid proposed_value for {p.affected_parameter}: {val}")
+                continue
+
+            # Bound score thresholds strictly between 0 and 100 if score param
+            if p.affected_parameter.endswith("_MIN_SCORE") or p.affected_parameter == "MIN_SIGNAL_SCORE":
+                val = max(0.0, min(100.0, float(val)))
+
+            # 3. Apply to in-memory config
+            setattr(config, p.affected_parameter, val)
+            rehydrated_count += 1
+            logger.info(f"Rehydrated config parameter {p.affected_parameter} = {val}")
+
+        return rehydrated_count
 
     def generate_proposals(self, lessons: List[PaperResearchLesson]) -> List[EvolutionProposal]:
         proposals = []
