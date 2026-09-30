@@ -79,9 +79,10 @@ def test_evolution_engine_strategy_proposal(evo_db):
     assert len(proposals) == 1
     p = proposals[0]
     
+    current_val = getattr(config, f"{lesson.strategy}_MIN_SCORE", config.MIN_SIGNAL_SCORE)
     assert p.affected_parameter == "BreakoutStrategy_MIN_SCORE"
-    assert p.current_value == config.MIN_SIGNAL_SCORE
-    assert p.proposed_value == config.MIN_SIGNAL_SCORE + 10.0
+    assert p.current_value == current_val
+    assert p.proposed_value == current_val + 10.0
     assert "Observed negative PnL for BreakoutStrategy" in p.reason
 
 def test_evolution_engine_apply_rollback_strategy(evo_db):

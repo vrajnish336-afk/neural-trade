@@ -226,7 +226,8 @@ class PaperRepository:
         slippage: float,
         timestamp: datetime,
         unrealized_pnl: float = 0.0,
-        regime: Optional[str] = None
+        regime: Optional[str] = None,
+        reason: str = "MANUAL_EXIT"
     ) -> bool:
         """
         Atomically executes an exit order, removing the position and realizing PnL.
@@ -287,7 +288,7 @@ class PaperRepository:
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (order_id, portfolio_id, decision_id, symbol, f"CLOSE_{direction}", quantity, 
-                         exit_price, ts_str, "FILLED", commission, slippage, now, None, regime_val, strategy_val)
+                         exit_price, ts_str, "FILLED", commission, slippage, now, reason, regime_val, strategy_val)
                     )
                     
                     # 2. Insert into Closed Positions Ledger
@@ -299,7 +300,7 @@ class PaperRepository:
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (position_id, portfolio_id, symbol, direction, pos['entry_time'], entry_price,
-                         ts_str, actual_price, quantity, pnl, "MANUAL_EXIT", strategy_val, regime_val, now)
+                         ts_str, actual_price, quantity, pnl, reason, strategy_val, regime_val, now)
                     )
                     
                     # 3. Delete Position from open inventory

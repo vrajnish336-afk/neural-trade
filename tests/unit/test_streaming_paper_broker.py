@@ -80,18 +80,18 @@ def test_approved_decision_success_and_idempotency(broker, base_decision):
     base_decision.risk_gate_approved = True
     
     # First execution should succeed
-    success1 = broker.execute_decision(base_decision, position_size=1.0)
+    success1 = broker.execute_decision(base_decision, position_size=1.0, stop_loss=90.0)
     assert success1 is True
     
     # Second execution of identical decision should be rejected for idempotency
-    success2 = broker.execute_decision(base_decision, position_size=1.0)
+    success2 = broker.execute_decision(base_decision, position_size=1.0, stop_loss=90.0)
     assert success2 is False
 
 def test_accounting_consistency(broker, base_decision):
     initial_equity = 10000.0
     
     # Execute
-    success = broker.execute_decision(base_decision, position_size=1.0)
+    success = broker.execute_decision(base_decision, position_size=1.0, stop_loss=90.0)
     assert success is True
     
     # Verify portfolio state
@@ -113,7 +113,7 @@ def test_reopen_db_preserves_state(temp_db, risk_engine, base_decision):
     repo1 = PaperRepository(temp_db)
     broker1 = StreamingPaperBroker(repository=repo1, risk_engine=risk_engine, cost_config=ExecutionAssumptions.BASELINE)
     
-    success = broker1.execute_decision(base_decision, position_size=1.0)
+    success = broker1.execute_decision(base_decision, position_size=1.0, stop_loss=90.0)
     assert success is True
     
     # Reopen
@@ -132,7 +132,7 @@ def test_execute_exit_success(broker, base_decision):
     # 1. Execute Entry (LONG at 100)
     base_decision.decision = "LONG"
     base_decision.evaluated_price = 100.0
-    broker.execute_decision(base_decision, position_size=1.0)
+    broker.execute_decision(base_decision, position_size=1.0, stop_loss=90.0)
     
     portfolio = broker.repo.get_or_create_portfolio(broker.portfolio_id)
     assert portfolio['current_cash'] < initial_equity
@@ -161,7 +161,7 @@ def test_execute_exit_no_positions(broker):
 def test_execute_exit_short(broker, base_decision):
     base_decision.decision = "SHORT"
     base_decision.evaluated_price = 100.0
-    broker.execute_decision(base_decision, position_size=1.0)
+    broker.execute_decision(base_decision, position_size=1.0, stop_loss=110.0)
     
     pos_id = broker.repo.get_open_positions(broker.portfolio_id)[0]['position_id']
     
@@ -177,7 +177,7 @@ def test_execute_exit_short(broker, base_decision):
 def test_execute_exit_invalid_price(broker, base_decision):
     base_decision.decision = "LONG"
     base_decision.evaluated_price = 100.0
-    broker.execute_decision(base_decision, position_size=1.0)
+    broker.execute_decision(base_decision, position_size=1.0, stop_loss=90.0)
     
     pos_id = broker.repo.get_open_positions(broker.portfolio_id)[0]['position_id']
     from datetime import datetime, timezone, timedelta
@@ -190,7 +190,7 @@ def test_execute_exit_invalid_price(broker, base_decision):
 def test_execute_exit_duplicate_idempotency(broker, base_decision):
     base_decision.decision = "LONG"
     base_decision.evaluated_price = 100.0
-    broker.execute_decision(base_decision, position_size=1.0)
+    broker.execute_decision(base_decision, position_size=1.0, stop_loss=90.0)
     
     pos_id = broker.repo.get_open_positions(broker.portfolio_id)[0]['position_id']
     from datetime import datetime, timezone, timedelta

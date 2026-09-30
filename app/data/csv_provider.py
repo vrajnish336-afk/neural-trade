@@ -17,6 +17,7 @@ class CsvHistoricalDataProvider(HistoricalDataProvider):
     
     def __init__(self, data_dir: str):
         self.data_dir = Path(data_dir)
+        self._cache = {}
         if not self.data_dir.exists():
             logger.warning("Data directory %s does not exist. Creating it.", self.data_dir)
             self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -40,6 +41,9 @@ class CsvHistoricalDataProvider(HistoricalDataProvider):
         timestamp, open, high, low, close, volume.
         """
         file_path = self._get_file_path(symbol, timeframe)
+        cache_key = (str(file_path), start_time, end_time)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
         
         if not file_path.exists():
             logger.error("CSV file not found: %s", file_path)
@@ -116,6 +120,7 @@ class CsvHistoricalDataProvider(HistoricalDataProvider):
                     # Skip rows that fail validation (e.g. negative prices caught by Pydantic)
                     logger.warning("Failed to create MarketBar for %s at %s: %s", symbol, row['timestamp'], e)
                     
+            self._cache[cache_key] = bars
             return bars
             
         except Exception as e:

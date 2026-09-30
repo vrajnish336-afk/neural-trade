@@ -37,18 +37,30 @@ class Config:
         self.DAILY_LOSS_LIMIT: float = float(os.getenv("DAILY_LOSS_LIMIT", "0.05")) # 5% max daily loss
         self.LOSS_STREAK_THRESHOLD: int = int(os.getenv("LOSS_STREAK_THRESHOLD", "3"))
         self.COOLDOWN_BARS: int = int(os.getenv("COOLDOWN_BARS", "5"))
+        self.DEATH_MODE_ENABLED: bool = os.getenv("DEATH_MODE_ENABLED", "false").lower() in ("true", "1", "yes")
+        self.DEATH_MODE_DRAWDOWN_LIMIT: float = float(os.getenv("DEATH_MODE_DRAWDOWN_LIMIT", "0.10"))
+        self.DEATH_MODE_LOSS_STREAK: int = int(os.getenv("DEATH_MODE_LOSS_STREAK", "5"))
         
         # Ensemble & Signal
         self.MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "50.0"))
+        self.STRATEGY_WEIGHTING_ENABLED: bool = os.getenv("STRATEGY_WEIGHTING_ENABLED", "false").lower() in ("true", "1", "yes")
+        self.MIN_STRATEGY_WEIGHT: float = float(os.getenv("MIN_STRATEGY_WEIGHT", "0.5"))
+        self.MAX_STRATEGY_WEIGHT: float = float(os.getenv("MAX_STRATEGY_WEIGHT", "2.0"))
+        
+        # Kronos Integration
+        self.KRONOS_STRONG_VETO_ENABLED: bool = os.getenv("KRONOS_STRONG_VETO_ENABLED", "false").lower() in ("true", "1", "yes")
         
         # Persistence & Database
         self.ENABLE_PERSISTENCE: bool = os.getenv("ENABLE_PERSISTENCE", "True").lower() in ("true", "1", "yes")
         self.DB_PATH: str = os.getenv("DB_PATH", "data/backtests.sqlite")
         
-        # Phase 8 Diagnostics
+        # Phase 8 Diagnostics & Research Sandbox
         self.DIAGNOSTIC_MODE: bool = os.getenv("DIAGNOSTIC_MODE", "false").lower() in ("true", "1", "yes")
+        self.AI_RESEARCH_SANDBOX_ENABLED: bool = os.getenv("AI_RESEARCH_SANDBOX_ENABLED", "false").lower() in ("true", "1", "yes")
+        self.SELF_LEARNING_EVOLUTION_ENABLED: bool = os.getenv("SELF_LEARNING_EVOLUTION_ENABLED", "false").lower() in ("true", "1", "yes")
         
         # Market Intelligence & News
+        self.MACRO_INTELLIGENCE_ENABLED: bool = os.getenv("MACRO_INTELLIGENCE_ENABLED", "false").lower() in ("true", "1", "yes")
         self.NEWS_LOOKBACK_HOURS: int = int(os.getenv("NEWS_LOOKBACK_HOURS", "72"))
         self.ANOMALY_ZSCORE_THRESHOLD: float = float(os.getenv("ANOMALY_ZSCORE_THRESHOLD", "2.5"))
         self.MIN_ARTICLE_RELEVANCE: float = float(os.getenv("MIN_ARTICLE_RELEVANCE", "0.5"))
@@ -57,6 +69,15 @@ class Config:
         self.NEWS_FEEDS: list[str] = os.getenv("NEWS_FEEDS", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=AAPL,MSFT,GOOG,AMZN,META").split(";")
         self.NEWS_FETCH_TIMEOUT: int = int(os.getenv("NEWS_FETCH_TIMEOUT", "10"))
         self.NEWS_MAX_RESPONSE_SIZE: int = int(os.getenv("NEWS_MAX_RESPONSE_SIZE", "5242880")) # 5MB limit
+        self.NEWS_CREDIBILITY_FILTER_ENABLED: bool = os.getenv("NEWS_CREDIBILITY_FILTER_ENABLED", "false").lower() in ("true", "1", "yes")
+        
+        # Quarantine
+        qmr_env = os.getenv("QUARANTINE_MEAN_REVERSION", "true").lower()
+        self.QUARANTINE_MEAN_REVERSION: bool = qmr_env not in ("false", "0", "no")
+        
+        # Circuit Breaker
+        self.CIRCUIT_BREAKER_PRICE_THRESHOLD: float = float(os.getenv("CIRCUIT_BREAKER_PRICE_THRESHOLD", "100000.0"))
+        
         
     def get_strategy_min_score(self, strategy_name: str) -> float:
         attr_name = f"{strategy_name}_MIN_SCORE"

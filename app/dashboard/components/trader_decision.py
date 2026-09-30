@@ -108,6 +108,7 @@ def render_trader_decision_tab():
                             
                             # Instantiate broker just for the exit action (RiskEngine is mocked minimally as it's not strictly evaluating a new signal here)
                             limits = PortfolioRiskLimits(initial_equity=10000.0)
+                            limits.rehydrate_from_paper_ledger(closed_positions)
                             risk_engine = RiskEngine(limits, risk_per_trade_pct=0.01)
                             broker = StreamingPaperBroker(repo, risk_engine, CostConfig(), "default_paper")
                             
@@ -224,6 +225,7 @@ def render_trader_decision_tab():
                 ensemble = StrategyEnsemble([strategy])
                 
                 limits = PortfolioRiskLimits(initial_equity=10000.0)
+                limits.rehydrate_from_paper_ledger(closed_positions)
                 risk_engine = RiskEngine(limits, risk_per_trade_pct=0.01)
                 
                 news_provider = FixtureNewsProvider()
@@ -248,12 +250,15 @@ def render_trader_decision_tab():
                 # We limit bars to 100 for evaluation speed
                 eval_bars = bars[:100] if bars else []
                 
+                # Calculate real risk state from PaperRepository
+                current_exposure = sum(p['entry_price'] * p['quantity'] for p in positions)
+                
                 decision: TraderDecision = orchestrator.evaluate(
                     symbol=symbol,
                     bars=eval_bars,
-                    current_equity=10000.0,
-                    current_positions_count=0,
-                    current_exposure=0.0
+                    current_equity=portfolio['current_equity'],
+                    current_positions_count=len(positions),
+                    current_exposure=current_exposure
                 )
                 
                 # Render Results

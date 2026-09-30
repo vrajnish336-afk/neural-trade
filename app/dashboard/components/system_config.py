@@ -12,6 +12,7 @@ def render_system_config_tab():
     risk_data = [
         {"Parameter": "PAPER_TRADING", "Value": str(getattr(config, "PAPER_TRADING", "Unavailable"))},
         {"Parameter": "LIVE_TRADING", "Value": str(getattr(config, "LIVE_TRADING", "Unavailable"))},
+        {"Parameter": "KRONOS_STRONG_VETO_ENABLED", "Value": str(getattr(config, "KRONOS_STRONG_VETO_ENABLED", "Unavailable"))},
         {"Parameter": "MAX_POSITION_SIZE", "Value": str(getattr(config, "MAX_POSITION_SIZE", "Unavailable"))},
         {"Parameter": "RISK_PER_TRADE", "Value": str(getattr(config, "RISK_PER_TRADE", "Unavailable"))},
         {"Parameter": "DAILY_LOSS_LIMIT", "Value": str(getattr(config, "DAILY_LOSS_LIMIT", "Unavailable"))},
@@ -19,7 +20,7 @@ def render_system_config_tab():
         {"Parameter": "MAX_POSITIONS", "Value": str(getattr(config, "MAX_POSITIONS", "Unavailable"))}
     ]
     
-    st.dataframe(pd.DataFrame(risk_data), use_container_width=True)
+    st.table(pd.DataFrame(risk_data))
     
     st.markdown("### Signal Thresholds & Strategy Configurations")
     
@@ -78,9 +79,9 @@ def render_system_config_tab():
                     pass
         strategy_data.append({"Parameter": f"Strategy: {strat}", "Value": str(val)})
                 
-    st.dataframe(pd.DataFrame(strategy_data), use_container_width=True)
+    st.table(pd.DataFrame(strategy_data))
     
     st.markdown("### Evolution Allowlist")
     allowlist_data = [{"Allowed Mutable Parameter": p} for p in SAFE_PARAMETERS]
     allowlist_data.append({"Allowed Mutable Parameter": "*_MIN_SCORE (Dynamic Strategy Thresholds)"})
-    st.dataframe(pd.DataFrame(allowlist_data), use_container_width=True)
+    st.table(pd.DataFrame(allowlist_data))

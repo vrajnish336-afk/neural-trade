@@ -58,8 +58,11 @@ class ASTSecurityValidator(ast.NodeVisitor):
     def visit_Attribute(self, node: ast.Attribute):
         # Prevent access to dunder attributes that might allow sandbox escape
         if node.attr.startswith("__") and node.attr.endswith("__"):
-            # Allow some common harmless ones if needed, but safer to block all 
-            # except very specific ones like __name__
-            if node.attr not in {"__name__"}:
-                self.errors.append(f"Illegal dunder attribute access: {node.attr}")
+            # Block all dunders to be safe (fail closed)
+            self.errors.append(f"Illegal dunder attribute access: {node.attr}")
+        self.generic_visit(node)
+        
+    def visit_Name(self, node: ast.Name):
+        if node.id.startswith("__") and node.id.endswith("__"):
+            self.errors.append(f"Illegal dunder name access: {node.id}")
         self.generic_visit(node)

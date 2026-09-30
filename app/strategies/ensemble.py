@@ -8,6 +8,8 @@ from app.config import config
 
 from app.strategies.adaptive import AdaptiveIntelligence
 
+from app.strategies.weighting_engine import PerformanceWeightingEngine
+
 logger = logging.getLogger(__name__)
 
 class StrategyEnsemble:
@@ -15,24 +17,44 @@ class StrategyEnsemble:
     Evaluates multiple strategies, calculates signal confluence,
     adapts to market regime, and deterministically scores the final signal.
     """
-    def __init__(self, strategies: List[Strategy], min_score: float = None, adaptive_intelligence: Optional[AdaptiveIntelligence] = None):
+    def __init__(
+        self, 
+        strategies: List[Strategy], 
+        min_score: float = None, 
+        adaptive_intelligence: Optional[AdaptiveIntelligence] = None,
+        weighting_engine: Optional[PerformanceWeightingEngine] = None
+    ):
         self.strategies = strategies
         # min_score is kept for backward compatibility but dynamic strategy threshold is preferred
         self.min_score = min_score if min_score is not None else config.MIN_SIGNAL_SCORE
         self.adaptive = adaptive_intelligence
+        self.weighting_engine = weighting_engine or PerformanceWeightingEngine()
         
-    def evaluate(self, bars: List[MarketBar], regime: MarketRegimeResult, intelligence: Optional[MarketIntelligence] = None, pre_generated_signals: Optional[List[TradingSignal]] = None) -> Optional[TradingSignal]:
+    def evaluate(
+        self, 
+        bars: List[MarketBar], 
+        regime: MarketRegimeResult, 
+        intelligence: Optional[MarketIntelligence] = None, 
+        pre_generated_signals: Optional[List[TradingSignal]] = None,
+        paper_trades: Optional[List[Dict[str, Any]]] = None
+    ) -> Optional[TradingSignal]:
         if regime.regime == "INSUFFICIENT_DATA":
             telemetry.record_rejection(RejectionReason.INSUFFICIENT_DATA, regime.regime)
             return None
             
         if pre_generated_signals is not None:
             signals = pre_generated_signals
+            if getattr(config, "QUARANTINE_MEAN_REVERSION", True):
+                signals = [sig for sig in signals if "MeanReversion" not in sig.strategy]
             for sig in signals:
                 telemetry.record_strategy_eval(sig.strategy, sig.direction)
         else:
             signals = []
             for strategy in self.strategies:
+                if "MeanReversion" in strategy.__class__.__name__ or strategy.name.startswith("MeanReversion"):
+                    if getattr(config, "QUARANTINE_MEAN_REVERSION", True):
+                        logger.info(f"MeanReversion quarantined, dropping active execution signal.")
+                        continue
                 sig = strategy.generate_signal(bars)
                 telemetry.record_strategy_eval(strategy.__class__.__name__, sig.direction if sig else None)
                 if sig:
@@ -41,6 +63,12 @@ class StrategyEnsemble:
         if not signals:
             telemetry.record_rejection(RejectionReason.NO_STRATEGY_SIGNAL, regime.regime)
             return None
+
+        # Apply dynamic performance weighting if enabled
+        if getattr(config, "STRATEGY_WEIGHTING_ENABLED", False):
+            for sig in signals:
+                weight = self.weighting_engine.calculate_weight(sig.strategy, paper_trades or [])
+                sig.confidence = min(1.0, max(0.0, sig.confidence * weight))
             
         directions = {s.direction for s in signals}
         final_direction = None

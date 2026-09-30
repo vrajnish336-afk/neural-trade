@@ -23,6 +23,36 @@ class PortfolioRiskLimits:
         if self.cooldown_remaining > 0:
             self.cooldown_remaining -= 1
             
+    def rehydrate_from_paper_ledger(self, closed_positions: list) -> None:
+        """Rehydrates risk state from persisted paper ledger."""
+        from datetime import datetime, timezone
+        
+        self.loss_streak = 0
+        self.daily_loss = 0.0
+        self.cooldown_remaining = 0
+        
+        if not closed_positions:
+            return
+            
+        now_date = datetime.now(timezone.utc).date()
+        for pos in closed_positions:
+            exit_time_str = pos['exit_time']
+            exit_time = datetime.fromisoformat(exit_time_str).astimezone(timezone.utc)
+            if exit_time.date() == now_date:
+                if pos['realized_pnl'] < 0:
+                    self.daily_loss += abs(pos['realized_pnl'])
+                    
+        streak = 0
+        for pos in closed_positions:
+            if pos['realized_pnl'] < 0:
+                streak += 1
+            else:
+                break
+        self.loss_streak = streak
+        
+        if self.loss_streak >= self.loss_streak_threshold:
+            self.cooldown_remaining = self.cooldown_bars
+            
     def update_from_closed_trade(self, trade: BacktestTrade) -> None:
         if trade.realized_pnl < 0:
             self.loss_streak += 1

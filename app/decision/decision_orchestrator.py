@@ -11,8 +11,13 @@ from app.forecasting.service import ForecastingService
 
 logger = logging.getLogger(__name__)
 
+from app.config import config
 from app.risk.drawdown import DrawdownService
 from app.execution.paper_repository import PaperRepository
+
+from app.analysis.mtf_engine import MultiTimeframeEngine
+
+from app.intelligence.service import WorldIntelligenceService
 
 class DecisionOrchestrator:
     """
@@ -29,7 +34,11 @@ class DecisionOrchestrator:
         paper_repository: Optional[PaperRepository] = None,
         drawdown_service: Optional[DrawdownService] = None,
         weighting_service: Optional['StrategyWeightingService'] = None,
-        data_provider: Optional[Any] = None
+        data_provider: Optional[Any] = None,
+        market_data_engine: Optional[Any] = None,
+        execution_adapter: Optional[Any] = None,
+        mtf_engine: Optional[MultiTimeframeEngine] = None,
+        world_intelligence_service: Optional[WorldIntelligenceService] = None
     ):
         self.ensemble = ensemble
         self.risk_engine = risk_engine
@@ -38,7 +47,11 @@ class DecisionOrchestrator:
         self.paper_repository = paper_repository
         self.drawdown_service = drawdown_service
         self.weighting_service = weighting_service
-        self.data_provider = data_provider
+        self.market_data_engine = market_data_engine
+        self.data_provider = data_provider or market_data_engine
+        self.execution_adapter = execution_adapter
+        self.mtf_engine = mtf_engine or MultiTimeframeEngine()
+        self.world_intelligence_service = world_intelligence_service
         
     def _generate_scenario_analysis(
         self, 
@@ -105,17 +118,25 @@ class DecisionOrchestrator:
         except Exception as e:
             logger.warning(f"Failed to fetch intelligence: {e}")
         
-        # Pseudo-MTF check inline on existing bars
-        mtf_alignment = "UNKNOWN"
-        if len(bars) >= 50:
-            sma20 = sum(b.close for b in bars[-20:]) / 20
-            sma50 = sum(b.close for b in bars[-50:]) / 50
-            if sma20 > sma50 * 1.02:
-                mtf_alignment = "ALIGNED_BULLISH"
-            elif sma20 < sma50 * 0.98:
-                mtf_alignment = "ALIGNED_BEARISH"
-            else:
-                mtf_alignment = "NEUTRAL"
+        # Multi-Timeframe Synchronization via MultiTimeframeEngine
+        h4_bars = None
+        d1_bars = None
+        if self.data_provider:
+            try:
+                from datetime import timedelta
+                h4_bars = self.data_provider.get_historical_bars(symbol, "4h", start_time=timestamp - timedelta(days=30), end_time=timestamp)
+                d1_bars = self.data_provider.get_historical_bars(symbol, "1d", start_time=timestamp - timedelta(days=100), end_time=timestamp)
+            except Exception as e:
+                logger.warning(f"Failed to fetch HTF bars for {symbol}: {e}")
+                
+        mtf_context = self.mtf_engine.align_timeframes(
+            symbol=symbol,
+            current_timestamp=timestamp,
+            h1_bars=bars,
+            h4_bars=h4_bars,
+            d1_bars=d1_bars
+        )
+        mtf_alignment = mtf_context.alignment
                 
         # Portfolio Correlation Awareness
         portfolio_correlation = "UNKNOWN"
@@ -248,6 +269,31 @@ class DecisionOrchestrator:
                 rationale += f" [Kronos forecast conflicts: {forecast_dir}]"
             # else: forecast_dir is UNKNOWN — no adjustment
             
+            # 6.2 Kronos Strong-Veto Gate (LONG-specific safety filter)
+            kronos_veto = False
+            kronos_veto_reason = None
+            if config.KRONOS_STRONG_VETO_ENABLED and signal.direction == "LONG":
+                if forecast_dir == "DOWN":
+                    kronos_veto = True
+                    kronos_veto_reason = "Kronos predicts DOWN against new LONG signal."
+                elif forecast_dir in ["UNKNOWN", "ERROR", None]:
+                    kronos_veto = True
+                    kronos_veto_reason = f"Kronos forecast is {forecast_dir} (fail-closed in strong-veto mode)."
+
+            # 6.3 Blow-Off-Top Circuit Breaker (High Price + Extreme Volatility)
+            circuit_breaker_veto = False
+            circuit_breaker_reason = None
+            price_threshold = getattr(config, "CIRCUIT_BREAKER_PRICE_THRESHOLD", 100000.0)
+            
+            if latest_bar.close >= price_threshold:
+                is_missing_volatility = (regime is None or regime.regime == "INSUFFICIENT_DATA")
+                is_high_volatility = (regime and regime.regime == "HIGH_VOLATILITY")
+                
+                if is_missing_volatility or is_high_volatility:
+                    if "TrendFollowing" not in signal.strategy:
+                        circuit_breaker_veto = True
+                        circuit_breaker_reason = "Blow-Off-Top Circuit Breaker Active: Price >= Threshold and Volatility is Extreme/Missing."
+
             risk_decision = self.risk_engine.evaluate_trade(
                 signal=signal,
                 current_equity=current_equity,
@@ -261,16 +307,50 @@ class DecisionOrchestrator:
                 decision_val = "WAIT"
                 rationale = f"Signal generated but blocked by Drawdown Gate: {risk_reason}"
                 main_risks.append("Portfolio Drawdown Halt")
+            elif kronos_veto:
+                risk_approved = False
+                risk_reason = kronos_veto_reason
+                decision_val = "WAIT"
+                rationale = f"Signal generated but blocked by Kronos Strong-Veto Gate: {risk_reason}"
+                main_risks.append("Kronos Strong-Veto Halt")
+            elif circuit_breaker_veto:
+                risk_approved = False
+                risk_reason = circuit_breaker_reason
+                decision_val = "WAIT"
+                rationale = f"Signal generated but blocked by Circuit Breaker: {risk_reason}"
+                main_risks.append("Blow-Off-Top Circuit Breaker")
             elif not risk_decision.approved:
                 risk_approved = False
                 risk_reason = risk_decision.rejection_reason
                 decision_val = "WAIT"
-                rationale = f"Signal generated but blocked by Risk Gate: {risk_reason}"
-                main_risks.append("Risk limit hit")
+                if risk_decision.relevant_limit == "DEATH_MODE":
+                    rationale = f"Signal generated but blocked by Death Mode Gate: {risk_reason}"
+                    main_risks.append("Risk-Off Death Mode Halt (New Entries Blocked)")
+                else:
+                    rationale = f"Signal generated but blocked by Risk Gate: {risk_reason}"
+                    main_risks.append("Risk limit hit")
             else:
                 risk_approved = True
                 risk_reason = None
         
+        # Resolve World Context
+        world_ctx_str = "UNKNOWN"
+        if getattr(config, "MACRO_INTELLIGENCE_ENABLED", False):
+            if self.world_intelligence_service:
+                try:
+                    w_ctx = self.world_intelligence_service.aggregate_context(as_of=timestamp)
+                    if w_ctx and w_ctx.sentiment_summary is not None:
+                        world_ctx_str = f"Score:{w_ctx.sentiment_summary:.2f}"
+                    else:
+                        world_ctx_str = "NOT_AVAILABLE"
+                except Exception as e:
+                    logger.warning(f"Failed to fetch WorldContext: {e}")
+                    world_ctx_str = "NOT_AVAILABLE"
+            else:
+                world_ctx_str = "NOT_AVAILABLE"
+        else:
+            world_ctx_str = intelligence.sentiment.label if intelligence else "UNKNOWN"
+
         return TraderDecision(
             symbol=symbol,
             timestamp=timestamp,
@@ -283,7 +363,7 @@ class DecisionOrchestrator:
             strategy_signals=[{"strategy": s.strategy, "direction": s.direction} for s in raw_signals] if raw_signals else [],
             forecast_direction=forecast_dir,
             forecast_uncertainty=forecast_unc,
-            world_context=intelligence.sentiment.label if intelligence else "UNKNOWN",
+            world_context=world_ctx_str,
             scenario_analysis=scenarios,
             main_risks=main_risks,
             invalidation_conditions=["Stop loss hit", "Regime change"],

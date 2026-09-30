@@ -16,15 +16,51 @@ class RiskEngine:
         self.limits = limits
         self.risk_per_trade_pct = risk_per_trade_pct
         self.max_position_value_pct = max_position_value_pct
+        self.is_death_mode_active: bool = False
+        self.death_mode_reason: Optional[str] = None
+        
+    def manual_reset_death_mode(self) -> None:
+        """Manually resets the latched Risk-Off Death Mode state."""
+        self.is_death_mode_active = False
+        self.death_mode_reason = None
+        logger.info("Death Mode manually reset by operator.")
         
     def evaluate_trade(
         self, 
         signal: TradingSignal, 
         current_equity: float, 
         current_positions_count: int, 
-        current_exposure: float
+        current_exposure: float,
+        current_drawdown: float = 0.0,
+        current_loss_streak: int = 0
     ) -> RiskDecision:
         
+        # 0. Latched Death Mode Check
+        from app.config import config
+        if getattr(config, "DEATH_MODE_ENABLED", False):
+            dd_limit = getattr(config, "DEATH_MODE_DRAWDOWN_LIMIT", 0.10)
+            streak_limit = getattr(config, "DEATH_MODE_LOSS_STREAK", 5)
+            
+            if current_drawdown >= dd_limit:
+                self.is_death_mode_active = True
+                self.death_mode_reason = f"Drawdown ({current_drawdown:.2%}) >= limit ({dd_limit:.2%})"
+            elif current_loss_streak >= streak_limit:
+                self.is_death_mode_active = True
+                self.death_mode_reason = f"Loss streak ({current_loss_streak}) >= limit ({streak_limit})"
+
+        if self.is_death_mode_active:
+            from app.diagnostics.telemetry import telemetry
+            from app.diagnostics.models import RejectionReason
+            telemetry.record_rejection(RejectionReason.RISK_LIMIT)
+            return RiskDecision(
+                approved=False,
+                requested_risk=0.0,
+                allowed_risk=0.0,
+                position_size=0.0,
+                rejection_reason=f"Rejected: Death Mode Active ({self.death_mode_reason or 'Risk-Off Latch'})",
+                relevant_limit="DEATH_MODE"
+            )
+            
         # 1. Portfolio Limits (Cooldown, Max Positions, Daily Loss, Exposure)
         limit_check, reason, limit_name = self.limits.can_open_new_position(
             current_positions_count, current_exposure, current_equity

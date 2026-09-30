@@ -92,69 +92,66 @@ def test_max_concurrent_positions_rejection(broker, base_decision):
     """
     Proves max_concurrent_positions rejection works at broker level.
     """
-    original_init = PortfolioRiskManager.__init__
+    broker.risk_engine.limits.max_positions = 1
     
-    def mock_init(self, config):
-        config.max_concurrent_positions = 1
-        original_init(self, config)
+    # First execution should succeed
+    success1 = broker.execute_decision(base_decision, position_size=1.0, stop_loss=90.0)
+    assert success1 is True
+    
+    # Second execution for a different symbol should be rejected due to max positions
+    decision2 = copy.deepcopy(base_decision)
+    decision2.symbol = "ETH/USD"
+    
+    success2 = broker.execute_decision(decision2, position_size=1.0, stop_loss=90.0)
+    assert success2 is False
         
-    with patch.object(PortfolioRiskManager, '__init__', new=mock_init):
-        # First execution should succeed
-        success1 = broker.execute_decision(base_decision, position_size=1.0)
-        assert success1 is True
-        
-        # Second execution for a different symbol should be rejected due to max positions
-        decision2 = copy.deepcopy(base_decision)
-        decision2.symbol = "ETH/USD"
-        
-        success2 = broker.execute_decision(decision2, position_size=1.0)
-        assert success2 is False
-        
-        # Verify only 1 position exists
-        state = broker.get_realtime_portfolio()
-        assert len(state.open_positions) == 1
-        assert state.open_positions[0]['symbol'] == "BTC/USD"
+    # Verify only 1 position exists
+    state = broker.get_realtime_portfolio()
+    assert len(state.open_positions) == 1
+    assert state.open_positions[0]['symbol'] == "BTC/USD"
 
 def test_accepted_decision_executes_normally(broker, base_decision):
     """
     Proves that a normal decision beneath limits executes successfully.
     """
     # Size 10 at $100 = $1,000, well below 100k limits
-    success = broker.execute_decision(base_decision, position_size=10.0)
+    success = broker.execute_decision(base_decision, position_size=10.0, stop_loss=90.0)
     assert success is True
     
     state = broker.get_realtime_portfolio()
     assert len(state.open_positions) == 1
     assert state.open_positions[0]['quantity'] == 10.0
 
-def test_strategy_exposure_accumulation(broker, base_decision):
+def test_total_exposure_accumulation(broker, base_decision):
     """
-    Proves that strategy positions are correctly accumulated across multiple trades.
+    Proves that total positions are correctly accumulated across multiple trades.
     """
-    original_init = PortfolioRiskManager.__init__
+    broker.risk_engine.limits.max_exposure_pct = 0.5  # 50% max
+    broker.risk_engine.limits.max_positions = 10
+
+    # 1. Open 30% exposure (30k). This succeeds.
+    decision1 = copy.deepcopy(base_decision)
+    decision1.timestamp += timedelta(minutes=1)
+    success1 = broker.execute_decision(decision1, position_size=300.0, stop_loss=90.0)
+    assert success1 is True
     
-    def mock_init(self, config):
-        config.max_strategy_exposure_pct = 0.5  # 50% max
-        config.max_concurrent_positions = 10
-        config.max_symbol_exposure_pct = 1.0
-        original_init(self, config)
-        
-    with patch.object(PortfolioRiskManager, '__init__', new=mock_init):
-        # 1. Open 40% exposure (40k). This succeeds.
-        decision1 = copy.deepcopy(base_decision)
-        decision1.timestamp += timedelta(minutes=1)
-        success1 = broker.execute_decision(decision1, position_size=400.0)
-        assert success1 is True
-        
-        # 2. Open another 40% exposure (40k). 
-        # Total strategy exposure should be 80%, exceeding the 50% limit.
-        decision2 = copy.deepcopy(base_decision)
-        decision2.timestamp += timedelta(minutes=2)
-        success2 = broker.execute_decision(decision2, position_size=400.0)
-        
-        # It should now be rejected because the first position's strategy was persisted and reloaded!
-        assert success2 is False
-        
-        # Verify no second position was created
-        state = broker.get_realtime_portfolio()
-        assert len(state.open_positions) == 1
+    # 2. Open another 30% exposure (30k). 
+    decision2 = copy.deepcopy(base_decision)
+    decision2.symbol = "ETH/USD"
+    decision2.timestamp += timedelta(minutes=2)
+    success2 = broker.execute_decision(decision2, position_size=300.0, stop_loss=90.0)
+    assert success2 is True
+    
+    # 3. Open another 30% exposure. Current exposure is 60k (60%).
+    # 60% >= 50%, so this should be rejected.
+    decision3 = copy.deepcopy(base_decision)
+    decision3.symbol = "SOL/USD"
+    decision3.timestamp += timedelta(minutes=3)
+    success3 = broker.execute_decision(decision3, position_size=300.0, stop_loss=90.0)
+    
+    # It should now be rejected because the total exposure exceeds limits
+    assert success3 is False
+    
+    # Verify exactly 2 positions were created
+    state = broker.get_realtime_portfolio()
+    assert len(state.open_positions) == 2

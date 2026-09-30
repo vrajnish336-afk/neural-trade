@@ -8,7 +8,14 @@ from app.execution.paper_repository import PaperRepository
 @patch("app.dashboard.components.trader_decision.DecisionOrchestrator")
 @patch("app.dashboard.components.trader_decision.PaperRepository")
 def test_dashboard_renders_meta_conclusion(mock_repo_class, mock_orchestrator_class, mock_st):
-    mock_repo_class.return_value = MagicMock()
+    mock_repo = MagicMock()
+    mock_repo.get_or_create_portfolio.return_value = {"current_equity": 10000.0, "current_cash": 10000.0}
+    mock_repo.get_open_positions.return_value = []
+    mock_repo.get_closed_positions.return_value = []
+    mock_repo.get_equity_snapshots.return_value = []
+    mock_repo.get_recent_orders.return_value = []
+    mock_repo_class.return_value = mock_repo
+    
     mock_st.columns.side_effect = lambda x: [MagicMock() for _ in range(x)] if isinstance(x, int) else [MagicMock() for _ in range(len(x))]
     mock_st.button.return_value = True
     
@@ -66,7 +73,14 @@ def test_dashboard_renders_meta_conclusion(mock_repo_class, mock_orchestrator_cl
 @patch("app.dashboard.components.trader_decision.DecisionOrchestrator")
 @patch("app.dashboard.components.trader_decision.PaperRepository")
 def test_dashboard_renders_missing_meta_conclusion(mock_repo_class, mock_orchestrator_class, mock_st):
-    mock_repo_class.return_value = MagicMock()
+    mock_repo = MagicMock()
+    mock_repo.get_or_create_portfolio.return_value = {"current_equity": 10000.0, "current_cash": 10000.0}
+    mock_repo.get_open_positions.return_value = []
+    mock_repo.get_closed_positions.return_value = []
+    mock_repo.get_equity_snapshots.return_value = []
+    mock_repo.get_recent_orders.return_value = []
+    mock_repo_class.return_value = mock_repo
+    
     mock_st.columns.side_effect = lambda x: [MagicMock() for _ in range(x)] if isinstance(x, int) else [MagicMock() for _ in range(len(x))]
     mock_st.button.return_value = True
     

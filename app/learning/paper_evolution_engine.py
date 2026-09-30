@@ -8,7 +8,9 @@ from app.learning.paper_evolution_models import (
     PostMortemObservation, PaperResearchLesson, EvolutionProposal, LessonState, ProposalStatus
 )
 from app.learning.paper_evolution_repository import PaperEvolutionRepository
+from app.sandbox.models import SandboxExecutionResult, ExperimentStatus
 from app.config import config
+
 
 logger = logging.getLogger(__name__)
 
@@ -278,3 +280,66 @@ class EvolutionProposalEngine:
         proposal.status = ProposalStatus.ROLLED_BACK
         self.evo_repo.save_proposal(proposal)
         return True
+
+    def validate_proposal_in_sandbox(
+        self,
+        proposal_id: str,
+        sandbox: Optional[Any] = None,
+        bars: Optional[List[Any]] = None,
+        timeout_seconds: int = 5
+    ) -> SandboxExecutionResult:
+        """Validates a human-approved evolution proposal inside ControlledResearchSandbox without modifying live config."""
+        if not getattr(config, "SELF_LEARNING_EVOLUTION_ENABLED", False):
+            raise PermissionError("Self-learning evolution feature is disabled in configuration.")
+
+        proposal = None
+        for p in self.evo_repo.get_proposals():
+            if p.proposal_id == proposal_id:
+                proposal = p
+                break
+
+        if not proposal:
+            raise ValueError(f"Proposal '{proposal_id}' not found.")
+
+        if proposal.status != ProposalStatus.APPROVED:
+            raise PermissionError(f"Proposal must have explicit human approval (status APPROVED) before sandbox validation. Current status: {proposal.status}")
+
+        is_safe = proposal.affected_parameter in SAFE_PARAMETERS or proposal.affected_parameter.endswith("_MIN_SCORE")
+        if not is_safe:
+            raise PermissionError(f"Parameter '{proposal.affected_parameter}' is not in the safe allowlist.")
+
+        if sandbox is None:
+            from app.sandbox.research_sandbox import ControlledResearchSandbox
+            sandbox = ControlledResearchSandbox()
+
+        candidate_code = f"""
+def research_strategy(bars, parameters):
+    threshold = float({proposal.proposed_value})
+    if not bars:
+        return None
+    latest = bars[-1]
+    if latest.close > latest.open and threshold > 0:
+        return TradingSignal(
+            symbol=latest.symbol,
+            timestamp=latest.timestamp,
+            direction="LONG",
+            strategy="EvolutionCandidate",
+            confidence=0.8,
+            reason="Sandbox candidate evaluation"
+        )
+    return None
+"""
+
+        res = sandbox.execute_candidate(
+            proposal_id=proposal.proposal_id,
+            code=candidate_code,
+            entrypoint="research_strategy",
+            bars=bars or [],
+            parameters={proposal.affected_parameter: proposal.proposed_value},
+            timeout_seconds=timeout_seconds
+        )
+        if res.is_safe and res.status == ExperimentStatus.COMPLETED:
+            proposal.validation_status = "SANDBOX_VALIDATED"
+            self.evo_repo.save_proposal(proposal)
+        return res
+

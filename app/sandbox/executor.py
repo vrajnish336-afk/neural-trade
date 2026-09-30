@@ -15,6 +15,15 @@ def _run_in_sandbox_process(code: str, entrypoint: str, bars: List[MarketBar], p
         # We only inject specific safe modules
         import math, statistics, numpy, pandas, datetime
         
+        # Create a restricted pandas namespace (fail closed on IO)
+        class RestrictedPandas:
+            def __getattr__(self, name):
+                if name in {"read_csv", "read_excel", "read_json", "read_sql", "read_html", "read_pickle", "read_clipboard", "read_parquet", "read_feather"}:
+                    raise PermissionError(f"Pandas I/O function '{name}' is disabled in sandbox.")
+                return getattr(pandas, name)
+                
+        safe_pd = RestrictedPandas()
+        
         sandbox_globals = {
             "__builtins__": {
                 "abs": abs, "all": all, "any": any, "bool": bool, "dict": dict, "float": float,
@@ -22,15 +31,15 @@ def _run_in_sandbox_process(code: str, entrypoint: str, bars: List[MarketBar], p
                 "print": print, "range": range, "round": round, "set": set, "str": str,
                 "sum": sum, "tuple": tuple, "zip": zip,
                 "Exception": Exception, "ValueError": ValueError, "TypeError": TypeError,
-                "KeyError": KeyError, "IndexError": IndexError,
-                "__import__": __builtins__["__import__"]
+                "KeyError": KeyError, "IndexError": IndexError
+                # Removed __import__ and open to prevent sandbox escape
             },
             "math": math,
             "statistics": statistics,
             "numpy": numpy,
             "np": numpy,
-            "pandas": pandas,
-            "pd": pandas,
+            "pandas": safe_pd,
+            "pd": safe_pd,
             "datetime": datetime,
             "TradingSignal": TradingSignal
         }

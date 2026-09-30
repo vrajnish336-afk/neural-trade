@@ -113,8 +113,8 @@ def test_simulation_chronological_flow_and_exits(mock_detect, broker, orchestrat
     # 2. Ensure TP was triggered on Bar 8
     # TP was 110. Bar 8 open=115, high=120. Gap up!
     # According to our runner logic, if open > TP (115 > 110), exit_price = open (115).
-    # Note: PaperRepository.execute_exit currently hardcodes exit_reason to "MANUAL_EXIT"
-    assert pos['exit_reason'] == "MANUAL_EXIT"
+    # Note: PaperRepository.execute_exit no longer hardcodes exit_reason, so TP_HIT correctly propagates
+    assert pos['exit_reason'] == "TP_HIT"
     assert pos['exit_price'] == 114.885  # 115.0 with baseline slippage applied
     
     # 3. Ensure no future data was leaked (entry time must match bar 5)

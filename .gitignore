@@ -39,3 +39,10 @@ scratch/
 wf_results.json
 reports/*.json
 app/strategies/kronos/research/experiment_manifest.json
+
+# Test artifacts
+*.log
+*.txt
+*.xml
+reports/*
+!reports/.gitkeep

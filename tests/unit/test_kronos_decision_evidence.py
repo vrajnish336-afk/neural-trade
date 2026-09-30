@@ -117,3 +117,52 @@ class TestBoundedness:
         signal.confidence = 0.02
         decision = _eval(orch, _make_bars())
         assert decision.confidence >= 0.0
+
+
+class TestKronosStrongVeto:
+    def test_long_conflict_vetoed_when_enabled(self):
+        orch, signal = _make_orchestrator(forecast_dir="DOWN")
+        with patch("app.decision.decision_orchestrator.config.KRONOS_STRONG_VETO_ENABLED", True):
+            decision = _eval(orch, _make_bars())
+            assert decision.decision == "WAIT"
+            assert decision.risk_gate_approved is False
+            assert decision.paper_execution_eligible is False
+            assert "Kronos Strong-Veto Gate" in decision.rationale
+
+    def test_unknown_or_error_fail_closed_when_enabled(self):
+        orch, signal = _make_orchestrator(forecast_dir="UNKNOWN")
+        with patch("app.decision.decision_orchestrator.config.KRONOS_STRONG_VETO_ENABLED", True):
+            decision = _eval(orch, _make_bars())
+            assert decision.decision == "WAIT"
+            assert decision.risk_gate_approved is False
+            assert "fail-closed in strong-veto mode" in decision.rationale
+
+        orch_err, signal_err = _make_orchestrator(forecast_dir="EXCEPTION")
+        with patch("app.decision.decision_orchestrator.config.KRONOS_STRONG_VETO_ENABLED", True):
+            decision_err = _eval(orch_err, _make_bars())
+            assert decision_err.decision == "WAIT"
+            assert decision_err.risk_gate_approved is False
+
+    def test_disabled_compatibility_preserves_baseline(self):
+        orch, signal = _make_orchestrator(forecast_dir="DOWN")
+        with patch("app.decision.decision_orchestrator.config.KRONOS_STRONG_VETO_ENABLED", False):
+            decision = _eval(orch, _make_bars())
+            assert decision.decision == "LONG"
+            assert decision.risk_gate_approved is True
+
+    def test_short_signal_not_vetoed_by_long_rule(self):
+        orch, signal = _make_orchestrator(forecast_dir="DOWN")
+        signal.direction = "SHORT"
+        with patch("app.decision.decision_orchestrator.config.KRONOS_STRONG_VETO_ENABLED", True):
+            decision = _eval(orch, _make_bars())
+            assert decision.decision == "SHORT"
+            assert decision.risk_gate_approved is True
+
+    def test_risk_engine_remains_authoritative_when_kronos_approves(self):
+        orch, signal = _make_orchestrator(forecast_dir="UP", risk_approved=False)
+        with patch("app.decision.decision_orchestrator.config.KRONOS_STRONG_VETO_ENABLED", True):
+            decision = _eval(orch, _make_bars())
+            assert decision.decision == "WAIT"
+            assert decision.risk_gate_approved is False
+            assert "Risk Gate" in decision.rationale
+

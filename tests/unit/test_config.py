@@ -27,3 +27,23 @@ def test_invalid_configuration():
         config = Config()
         assert config.LIVE_TRADING is False  # Any string other than 'true' is False
         assert config.PAPER_TRADING is False # Handled properly
+
+def test_macro_intelligence_disabled_by_default(default_config):
+    """Explicitly verify macro intelligence is disabled by default."""
+    assert default_config.MACRO_INTELLIGENCE_ENABLED is False
+
+def test_death_mode_defaults(default_config):
+    """Explicitly verify Death Mode defaults are safe and expected."""
+    assert default_config.DEATH_MODE_ENABLED is False
+    assert default_config.DEATH_MODE_DRAWDOWN_LIMIT == 0.10
+    assert default_config.DEATH_MODE_LOSS_STREAK == 5
+
+def test_ai_research_sandbox_disabled_by_default(default_config):
+    """Explicitly verify AI research sandbox is disabled by default."""
+    assert default_config.AI_RESEARCH_SANDBOX_ENABLED is False
+
+def test_self_learning_evolution_disabled_by_default(default_config):
+    """Explicitly verify self-learning evolution is disabled by default."""
+    assert default_config.SELF_LEARNING_EVOLUTION_ENABLED is False
+
+

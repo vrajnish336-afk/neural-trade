@@ -75,10 +75,6 @@ class StreamingPaperBroker:
         
         current_exposure = sum(p['quantity'] * p['entry_price'] for p in state.open_positions)
         
-        from app.risk.portfolio import PortfolioRiskManager, PortfolioRiskConfig
-        port_mgr = PortfolioRiskManager(PortfolioRiskConfig())
-        port_mgr.state = state
-        
         from app.core.models import TradingSignal
         dummy_signal = TradingSignal(
             symbol=decision.symbol, timestamp=decision.timestamp, direction=decision.decision,
@@ -87,10 +83,20 @@ class StreamingPaperBroker:
             stop_loss=stop_loss, take_profit=take_profit
         )
         
-        approved, reason, limit = port_mgr.can_open_position(dummy_signal, position_size, current_equity)
-        if not approved:
-            logger.warning(f"Portfolio limit rejected execution: {reason}")
-            self.repo.record_rejected_trade(self.portfolio_id, decision_id, decision.symbol, decision.decision, f"Portfolio Limit: {reason}", decision.timestamp, actual_strategy, decision.regime)
+        # Hydrate limits from paper repository before evaluating (for Defect 3)
+        closed_positions = self.repo.get_closed_positions(self.portfolio_id, limit=50)
+        self.risk_engine.limits.rehydrate_from_paper_ledger(closed_positions)
+        
+        risk_decision = self.risk_engine.evaluate_trade(
+            signal=dummy_signal,
+            current_equity=current_equity,
+            current_positions_count=len(state.open_positions),
+            current_exposure=current_exposure
+        )
+        
+        if not risk_decision.approved:
+            logger.warning(f"Authoritative RiskEngine rejected execution: {risk_decision.rejection_reason}")
+            self.repo.record_rejected_trade(self.portfolio_id, decision_id, decision.symbol, decision.decision, f"RiskEngine: {risk_decision.rejection_reason}", decision.timestamp, actual_strategy, decision.regime)
             return False
             
         # Calculate unrealized PnL based on the price of the symbol being traded (if an open position exists for it)
@@ -160,5 +166,6 @@ class StreamingPaperBroker:
             commission=commission,
             slippage=slippage,
             timestamp=timestamp,
-            unrealized_pnl=unrealized_pnl
+            unrealized_pnl=unrealized_pnl,
+            reason=reason
         )

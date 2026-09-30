@@ -58,10 +58,9 @@ def test_sandbox_executor_success():
     executor = SandboxExecutor()
     code = """
 def research_strategy(bars, parameters):
-    from datetime import datetime, timezone
-    return TradingSignal(symbol="BTC", direction="LONG", confidence=0.8, timestamp=datetime.now(timezone.utc), strategy="S", reason="Test")
+    return TradingSignal(symbol="BTC", direction="LONG", confidence=0.8, timestamp=bars[-1].timestamp if bars else None, strategy="S", reason="Test")
 """
-    res = executor.test_execution(code, "research_strategy", [], {})
+    res = executor.test_execution(code, "research_strategy", [MarketBar(symbol="BTC", timestamp=datetime.now(), open=1, high=1, low=1, close=1, volume=1)], {})
     assert res.status == "COMPLETED"
     assert res.is_safe is True
     
@@ -71,8 +70,7 @@ def test_sandbox_service_pipeline():
     
     code = """def research_strategy(bars, parameters):
     if not bars: return None
-    from datetime import datetime, timezone
-    return TradingSignal(symbol=bars[-1].symbol, direction="LONG", confidence=1.0, timestamp=datetime.now(timezone.utc), strategy="S", reason="Test")
+    return TradingSignal(symbol=bars[-1].symbol, direction="LONG", confidence=1.0, timestamp=bars[-1].timestamp, strategy="S", reason="Test")
 """
     proposal = svc.propose_code("StratTest", "T", "D", code)
     assert proposal.status == ProposalStatus.VALIDATING

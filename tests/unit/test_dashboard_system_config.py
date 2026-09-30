@@ -7,9 +7,9 @@ from app.learning.paper_evolution_engine import SAFE_PARAMETERS
 
 @patch("streamlit.markdown")
 @patch("streamlit.warning")
-@patch("streamlit.dataframe")
+@patch("streamlit.table")
 @patch("app.learning.paper_evolution_repository.PaperEvolutionRepository")
-def test_system_config_renders_values(mock_repo, mock_dataframe, mock_warning, mock_markdown):
+def test_system_config_renders_values(mock_repo, mock_table, mock_warning, mock_markdown):
     # Setup some test state
     mock_instance = mock_repo.return_value
     mock_instance.get_lessons.return_value = []
@@ -23,16 +23,17 @@ def test_system_config_renders_values(mock_repo, mock_dataframe, mock_warning, m
     # Assert safety warning
     mock_warning.assert_any_call("READ-ONLY VIEW. PAPER TRADING ONLY. LIVE TRADING DISABLED.")
     
-    # Check dataframes
-    assert mock_dataframe.call_count == 3
+    # Check tables rendered as static read-only tables
+    assert mock_table.call_count == 3
     
-    # Extract arguments passed to st.dataframe
-    risk_df = mock_dataframe.call_args_list[0][0][0]
-    strategy_df = mock_dataframe.call_args_list[1][0][0]
-    allowlist_df = mock_dataframe.call_args_list[2][0][0]
+    # Extract arguments passed to st.table
+    risk_df = mock_table.call_args_list[0][0][0]
+    strategy_df = mock_table.call_args_list[1][0][0]
+    allowlist_df = mock_table.call_args_list[2][0][0]
     
-    # Assert Risk DF contains PAPER_TRADING
+    # Assert Risk DF contains PAPER_TRADING and KRONOS_STRONG_VETO_ENABLED
     assert "PAPER_TRADING" in risk_df["Parameter"].values
+    assert "KRONOS_STRONG_VETO_ENABLED" in risk_df["Parameter"].values
     
     # Assert Strategy DF contains global and specific thresholds
     assert "Global MIN_SIGNAL_SCORE" in strategy_df["Parameter"].values
@@ -43,7 +44,7 @@ def test_system_config_renders_values(mock_repo, mock_dataframe, mock_warning, m
     
     # Assert Allowlist DF
     assert "*_MIN_SCORE (Dynamic Strategy Thresholds)" in allowlist_df["Allowed Mutable Parameter"].values
-    
+        
     # Cleanup
     if old_min is not None:
         config.MIN_SIGNAL_SCORE = old_min
@@ -51,9 +52,9 @@ def test_system_config_renders_values(mock_repo, mock_dataframe, mock_warning, m
 
 @patch("streamlit.markdown")
 @patch("streamlit.warning")
-@patch("streamlit.dataframe")
+@patch("streamlit.table")
 @patch("app.learning.paper_evolution_repository.PaperEvolutionRepository")
-def test_system_config_unavailable_fields(mock_repo, mock_dataframe, mock_warning, mock_markdown):
+def test_system_config_unavailable_fields(mock_repo, mock_table, mock_warning, mock_markdown):
     # Setup some test state
     mock_instance = mock_repo.return_value
     mock_instance.get_lessons.return_value = []
@@ -65,7 +66,7 @@ def test_system_config_unavailable_fields(mock_repo, mock_dataframe, mock_warnin
         
     render_system_config_tab()
     
-    risk_df = mock_dataframe.call_args_list[0][0][0]
+    risk_df = mock_table.call_args_list[0][0][0]
     assert "MAX_POSITION_SIZE" in risk_df["Parameter"].values
     assert risk_df[risk_df["Parameter"] == "MAX_POSITION_SIZE"]["Value"].iloc[0] == "Unavailable"
     
@@ -74,15 +75,15 @@ def test_system_config_unavailable_fields(mock_repo, mock_dataframe, mock_warnin
 
 def test_system_config_is_readonly():
     # The component should not have any mutating API calls or return values
-    with patch("streamlit.markdown"), patch("streamlit.warning"), patch("streamlit.dataframe"), patch("app.learning.paper_evolution_repository.PaperEvolutionRepository"):
+    with patch("streamlit.markdown"), patch("streamlit.warning"), patch("streamlit.table"), patch("app.learning.paper_evolution_repository.PaperEvolutionRepository"):
         result = render_system_config_tab()
         assert result is None # It's a pure void render function
 
 @patch("streamlit.markdown")
 @patch("streamlit.warning")
-@patch("streamlit.dataframe")
+@patch("streamlit.table")
 @patch("app.learning.paper_evolution_repository.PaperEvolutionRepository")
-def test_system_config_shows_verified_strategies(mock_repo, mock_dataframe, mock_warning, mock_markdown):
+def test_system_config_shows_verified_strategies(mock_repo, mock_table, mock_warning, mock_markdown):
     from app.learning.paper_evolution_models import LessonState
     
     # Mock a validated lesson
@@ -101,7 +102,7 @@ def test_system_config_shows_verified_strategies(mock_repo, mock_dataframe, mock
     with patch.dict('os.environ', {'ENVSTRATEGY_MIN_SCORE': '99.0'}):
         render_system_config_tab()
     
-    strategy_df = mock_dataframe.call_args_list[1][0][0]
+    strategy_df = mock_table.call_args_list[1][0][0]
     
     assert "Strategy: VerifiedTrend" in strategy_df["Parameter"].values
     assert "Strategy: Breakout" in strategy_df["Parameter"].values
@@ -111,8 +112,8 @@ def test_system_config_shows_verified_strategies(mock_repo, mock_dataframe, mock
 
 @patch("streamlit.markdown")
 @patch("streamlit.warning")
-@patch("streamlit.dataframe")
-def test_system_config_discovers_multiple_strategies_from_dir(mock_dataframe, mock_warning, mock_markdown):
+@patch("streamlit.table")
+def test_system_config_discovers_multiple_strategies_from_dir(mock_table, mock_warning, mock_markdown):
     # This test asserts that when multiple strategy keys exist on the config class, discovery renders them.
     from app.config import Config
     
@@ -123,7 +124,7 @@ def test_system_config_discovers_multiple_strategies_from_dir(mock_dataframe, mo
     # Ensure they are NOT in instance __dict__ to prove dir() works
     render_system_config_tab()
     
-    strategy_df = mock_dataframe.call_args_list[1][0][0]
+    strategy_df = mock_table.call_args_list[1][0][0]
     
     # Assert multiple strategies discovered
     assert "Strategy: TrendFollowing" in strategy_df["Parameter"].values
@@ -137,9 +138,9 @@ def test_system_config_discovers_multiple_strategies_from_dir(mock_dataframe, mo
 
 @patch("streamlit.markdown")
 @patch("streamlit.warning")
-@patch("streamlit.dataframe")
+@patch("streamlit.table")
 @patch("app.learning.paper_evolution_repository.PaperEvolutionRepository")
-def test_system_config_shows_base_strategies_when_no_overrides(mock_repo, mock_dataframe, mock_warning, mock_markdown):
+def test_system_config_shows_base_strategies_when_no_overrides(mock_repo, mock_table, mock_warning, mock_markdown):
     # This test reproduces the issue where discovery returns an empty set if no overrides or lessons exist
     mock_instance = mock_repo.return_value
     mock_instance.get_lessons.return_value = []
@@ -148,7 +149,7 @@ def test_system_config_shows_base_strategies_when_no_overrides(mock_repo, mock_d
     with patch.dict('os.environ', {}, clear=True):
         render_system_config_tab()
         
-    strategy_df = mock_dataframe.call_args_list[1][0][0]
+    strategy_df = mock_table.call_args_list[1][0][0]
     
     # Assert base strategies are discovered even without overrides
     assert "Strategy: BreakoutStrategy" in strategy_df["Parameter"].values
