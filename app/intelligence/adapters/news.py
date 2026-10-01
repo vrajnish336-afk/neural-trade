@@ -42,7 +42,7 @@ Output ONLY a JSON object:
 }}
 """
         payload = {
-            "model": "llama3",
+            "model": "llama3.2",
             "prompt": prompt,
             "stream": False,
             "format": "json"
@@ -54,7 +54,7 @@ Output ONLY a JSON object:
                 data=json.dumps(payload).encode('utf-8'), 
                 headers={'Content-Type': 'application/json'}
             )
-            with urllib.request.urlopen(req, timeout=5) as response:
+            with urllib.request.urlopen(req, timeout=30) as response:
                 result_raw = response.read().decode('utf-8')
                 result_json = json.loads(result_raw)
                 ai_response_text = result_json.get("response", "{}")
