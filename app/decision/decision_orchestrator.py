@@ -360,7 +360,11 @@ class DecisionOrchestrator:
             volatility_context="NORMAL",
             multi_timeframe_alignment=mtf_alignment if 'mtf_alignment' in locals() else "UNKNOWN",
             portfolio_correlation=portfolio_correlation if 'portfolio_correlation' in locals() else "UNKNOWN",
-            strategy_signals=[{"strategy": s.strategy, "direction": s.direction} for s in raw_signals] if raw_signals else [],
+            strategy_signals=[
+                {"strategy": s.strategy, "direction": s.direction} 
+                for s in raw_signals 
+                if not (getattr(config, "QUARANTINE_MEAN_REVERSION", True) and "MeanReversion" in s.strategy)
+            ] if raw_signals else [],
             forecast_direction=forecast_dir,
             forecast_uncertainty=forecast_unc,
             world_context=world_ctx_str,
