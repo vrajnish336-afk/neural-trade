@@ -82,17 +82,17 @@ def test_broker_uses_injected_risk_engine(tmp_path):
             created_at TEXT NOT NULL,
             FOREIGN KEY(portfolio_id) REFERENCES paper_portfolios(portfolio_id)
         );
-        CREATE TABLE IF NOT EXISTS paper_rejected_trades (
-            id TEXT PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS rejected_paper_orders (
+            rejection_id TEXT PRIMARY KEY,
             portfolio_id TEXT NOT NULL,
             decision_id TEXT,
-            symbol TEXT,
-            decision TEXT,
-            reason TEXT,
-            timestamp TEXT,
+            symbol TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
             strategy TEXT,
             regime TEXT,
-            created_at TEXT
+            created_at TEXT NOT NULL
         );
         ''')
     
@@ -130,6 +130,8 @@ def test_broker_uses_injected_risk_engine(tmp_path):
     assert not success, "Should be rejected by the authoritative risk engine limit (max_positions=0)"
     
     with repo._get_conn() as conn:
-        rej = conn.execute("SELECT * FROM paper_orders WHERE status = 'REJECTED'").fetchone()
+        rej = conn.execute("SELECT * FROM rejected_paper_orders").fetchone()
         assert rej is not None
         assert "RiskEngine" in rej['reason']
+        orders_count = conn.execute("SELECT COUNT(*) as cnt FROM paper_orders").fetchone()['cnt']
+        assert orders_count == 0

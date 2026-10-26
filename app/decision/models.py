@@ -32,6 +32,8 @@ class TraderDecision(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     decision: str = Field(description="LONG, SHORT, WAIT, or NO TRADE")
     evaluated_price: float = Field(description="The exact price of the asset at the evaluated timestamp")
+    stop_loss: Optional[float] = Field(None, description="The stop loss price requested by the strategy")
+    take_profit: Optional[float] = Field(None, description="The take profit price requested by the strategy")
     risk_gate_approved: bool
     risk_gate_reason: Optional[str] = None
     paper_execution_eligible: bool

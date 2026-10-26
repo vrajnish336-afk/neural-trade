@@ -110,4 +110,4 @@ def test_legacy_database_backward_compatibility(temp_db):
     repo = PaperRepository(db_path=temp_db)
     repo.get_or_create_portfolio("default", 100.0)
     repo.record_rejected_trade("default", "dec1", "BTC", "LONG", "test", datetime.now(timezone.utc), regime="HIGH_VOLATILITY")
-    assert repo.get_recent_orders("default")[0]["regime"] == "HIGH_VOLATILITY"
+    assert repo.get_rejected_orders("default")[0]["regime"] == "HIGH_VOLATILITY"

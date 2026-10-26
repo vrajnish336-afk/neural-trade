@@ -53,9 +53,9 @@ def render_research_tab(
                 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Win Rate", f"{report_json['trade_metrics']['win_rate']:.2f}%")
-                c2.metric("Profit Factor", f"{report_json['trade_metrics']['profit_factor']:.2f}")
+                c2.metric("Profit Factor (Post-Cost)", f"{report_json['trade_metrics']['profit_factor']:.2f}")
                 c3.metric("Max Drawdown", f"{report_json['equity_metrics']['max_drawdown_pct']:.2f}%")
-                c4.metric("Avg Trade PNL", f"${report_json['trade_metrics']['average_pnl']:.2f}")
+                c4.metric("Avg Trade PNL (Net)", f"${report_json['trade_metrics']['average_pnl']:.2f}")
                 
                 st.write("### Strategy Attribution")
                 st.table(pd.DataFrame(report_json['strategy_attribution']))

@@ -49,6 +49,8 @@ class WalkForwardWindowResult(BaseModel):
     return_pct: float
     win_rate: float
     profit_factor: float
+    gross_profit: float = 0.0
+    gross_loss: float = 0.0
     max_drawdown_pct: float
 
 class SeedTestResult(BaseModel):

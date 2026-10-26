@@ -32,7 +32,7 @@ def render_metrics_bar(metrics_data: Dict[str, Any]):
         pnl_class = get_color_class(active_pnl)
         st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-label">ACTIVE PnL</div>
+            <div class="metric-label">ACTIVE PnL (NET)</div>
             <div class="metric-value {pnl_class}">{active_pnl}</div>
         </div>
         """, unsafe_allow_html=True)

@@ -11,29 +11,61 @@ from app.sandbox.models import SandboxExecutionResult, ExperimentStatus
 def _run_in_sandbox_process(code: str, entrypoint: str, bars: List[MarketBar], parameters: Dict[str, Any], result_queue: multiprocessing.Queue):
     """Executes the strategy inside a separate process."""
     try:
+        # Enforce OS-level resource limits where supported (POSIX/Linux)
+        try:
+            import resource
+            max_memory = 512 * 1024 * 1024  # 512 MB memory limit
+            resource.setrlimit(resource.RLIMIT_AS, (max_memory, max_memory))
+            resource.setrlimit(resource.RLIMIT_CPU, (10, 10))  # 10 seconds CPU limit
+        except (ImportError, AttributeError, ValueError, OSError):
+            pass
+
         # Create an isolated global dictionary
         # We only inject specific safe modules
         import math, statistics, numpy, pandas, datetime
         
         # Create a restricted pandas namespace (fail closed on IO)
+        BLOCKED_PANDAS_METHODS = {
+            "read_csv", "read_excel", "read_json", "read_sql", "read_sql_query",
+            "read_sql_table", "read_html", "read_pickle", "read_clipboard",
+            "read_parquet", "read_feather", "read_table", "read_xml", "read_hdf",
+            "read_stata", "read_sas", "read_spss", "to_csv", "to_excel",
+            "to_json", "to_sql", "to_pickle", "to_parquet", "to_feather",
+            "to_html", "to_clipboard", "to_hdf", "to_xml"
+        }
+        
+        def _raise_pandas_io_error(name: str):
+            raise PermissionError(f"Pandas I/O function '{name}' is disabled in sandbox.")
+
         class RestrictedPandas:
             def __getattr__(self, name):
-                if name in {"read_csv", "read_excel", "read_json", "read_sql", "read_html", "read_pickle", "read_clipboard", "read_parquet", "read_feather"}:
-                    raise PermissionError(f"Pandas I/O function '{name}' is disabled in sandbox.")
+                if name in BLOCKED_PANDAS_METHODS:
+                    _raise_pandas_io_error(name)
                 return getattr(pandas, name)
                 
         safe_pd = RestrictedPandas()
+
+        # Strip/wrap dangerous I/O on DataFrame and Series inside isolated sandbox process
+        for m in BLOCKED_PANDAS_METHODS:
+            def _blocker(method_name=m, *args, **kwargs):
+                _raise_pandas_io_error(method_name)
+            if hasattr(pandas.DataFrame, m):
+                setattr(pandas.DataFrame, m, _blocker)
+            if hasattr(pandas.Series, m):
+                setattr(pandas.Series, m, _blocker)
+        
+        # Builtins explicitly without __import__ or open
+        safe_builtins = {
+            "abs": abs, "all": all, "any": any, "bool": bool, "dict": dict, "float": float,
+            "int": int, "len": len, "list": list, "max": max, "min": min, "pow": pow,
+            "print": print, "range": range, "round": round, "set": set, "str": str,
+            "sum": sum, "tuple": tuple, "zip": zip,
+            "Exception": Exception, "ValueError": ValueError, "TypeError": TypeError,
+            "KeyError": KeyError, "IndexError": IndexError
+        }
         
         sandbox_globals = {
-            "__builtins__": {
-                "abs": abs, "all": all, "any": any, "bool": bool, "dict": dict, "float": float,
-                "int": int, "len": len, "list": list, "max": max, "min": min, "pow": pow,
-                "print": print, "range": range, "round": round, "set": set, "str": str,
-                "sum": sum, "tuple": tuple, "zip": zip,
-                "Exception": Exception, "ValueError": ValueError, "TypeError": TypeError,
-                "KeyError": KeyError, "IndexError": IndexError
-                # Removed __import__ and open to prevent sandbox escape
-            },
+            "__builtins__": safe_builtins,
             "math": math,
             "statistics": statistics,
             "numpy": numpy,
@@ -51,6 +83,11 @@ def _run_in_sandbox_process(code: str, entrypoint: str, bars: List[MarketBar], p
         sys.stdout = captured_out
         
         try:
+            if "__" in code:
+                raise ValueError("Sandbox error: Use of dunder methods (__) is strictly prohibited.")
+            if "import " in code:
+                raise ValueError("Sandbox error: 'import' statements are strictly prohibited.")
+                
             exec(code, sandbox_globals)
             
             if entrypoint not in sandbox_globals:

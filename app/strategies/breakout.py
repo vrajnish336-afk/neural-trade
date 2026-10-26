@@ -48,6 +48,8 @@ class BreakoutStrategy(Strategy):
             
         if current_close > prev_high and current_volume > prev_avg_vol:
             sl = max(0.01, current_close - (current_atr * 2))
+            risk = abs(current_close - sl)
+            tp = current_close + (3.0 * risk)
             return TradingSignal(
                 symbol=last_bar.symbol,
                 timestamp=last_bar.timestamp,
@@ -56,13 +58,15 @@ class BreakoutStrategy(Strategy):
                 confidence=0.7,
                 entry_price=current_close,
                 stop_loss=sl,
-                take_profit=current_close + (current_atr * 4),
+                take_profit=tp,
                 reason="Price broke above previous high with volume"
             )
             
         # SHORT Breakout
         elif current_close < prev_low and current_volume > prev_avg_vol:
-            tp = max(0.01, current_close - (current_atr * 4))
+            sl = current_close + (current_atr * 2)
+            risk = abs(current_close - sl)
+            tp = max(0.01, current_close - (3.0 * risk))
             return TradingSignal(
                 symbol=last_bar.symbol,
                 timestamp=last_bar.timestamp,
@@ -70,7 +74,7 @@ class BreakoutStrategy(Strategy):
                 strategy=self.name,
                 confidence=0.7,
                 entry_price=current_close,
-                stop_loss=current_close + (current_atr * 2),
+                stop_loss=sl,
                 take_profit=tp,
                 reason="Price broke below previous low with volume"
             )

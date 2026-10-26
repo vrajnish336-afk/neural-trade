@@ -29,7 +29,18 @@ from app.risk.drawdown import DrawdownService
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-ccxt_exchange = ccxt.binance()
+ccxt_exchange = ccxt.binance({
+    'options': {
+        'fetchMarkets': {'types': ['spot']}
+    },
+    'urls': {
+        'api': {
+            'public': 'https://data-api.binance.vision/api/v3',
+            'v1': 'https://data-api.binance.vision/api/v1',
+            'v3': 'https://data-api.binance.vision/api/v3'
+        }
+    }
+})
 ccxt_exchange.session = __import__('requests').Session()
 ccxt_exchange.session.verify = False
 provider = ReadOnlyLiveMarketDataAdapter(provider=ccxt_exchange)
@@ -44,11 +55,14 @@ risk_limits = PortfolioRiskLimits(initial_equity=10000.0)
 risk_engine = RiskEngine(risk_limits, risk_per_trade_pct=0.02)
 ensemble = StrategyEnsemble([BreakoutStrategy(), TrendFollowingStrategy(), MeanReversionStrategy()], min_score=0.0)
 news = NewsAdapter()
+from app.services.intelligence import IntelligenceService
+from app.news.provider import FixtureNewsProvider
+intel_old = IntelligenceService(FixtureNewsProvider(), config)
 intel = WorldIntelligenceService()
 # Skipping full intel update so we don't spam Yahoo/LLM, wait let's just do it to prove it works
 intel.fetch_and_store_all()
 broker = StreamingPaperBroker(repository=paper_repo, risk_engine=risk_engine, portfolio_id=pid)
-orch = DecisionOrchestrator(ensemble=ensemble, risk_engine=risk_engine, intelligence_service=intel, forecasting_service=fs, paper_repository=paper_repo, drawdown_service=DrawdownService(), data_provider=provider)
+orch = DecisionOrchestrator(ensemble=ensemble, risk_engine=risk_engine, intelligence_service=intel_old, world_intelligence_service=intel, forecasting_service=fs, paper_repository=paper_repo, drawdown_service=DrawdownService(), data_provider=provider)
 
 for sym in symbols:
     logger.info(f'Fetching {sym}')

@@ -269,3 +269,77 @@ def test_non_positive_mid_series_equity_skipped_in_peak_tracking():
     assert result.status == DrawdownStatus.OK
     assert result.running_peak_equity == 10000.0
     assert result.current_equity == 9800.0
+
+
+# -------------------------------------------------------------------------
+# Dynamic equity & open-loss integration
+# -------------------------------------------------------------------------
+
+def test_drawdown_with_dynamic_equity_open_loss():
+    """Live dynamic equity includes floating open loss; drawdown should reflect peak-to-trough open loss."""
+    svc = DrawdownService()
+    rows = [
+        _row("2023-01-01T00:00:00", 10000.0),
+        _row("2023-01-02T00:00:00", 10000.0),
+    ]
+    # Current dynamic equity is 7000.0 due to a -$3000 open position loss
+    result = svc.calculate(rows, current_equity=7000.0, as_of="2023-01-03T00:00:00")
+    assert result.status == DrawdownStatus.OK
+    assert result.running_peak_equity == 10000.0
+    assert result.current_equity == 7000.0
+    expected_dd = (10000.0 - 7000.0) / 10000.0 * 100.0
+    assert abs(result.current_drawdown_pct - expected_dd) < 0.01
+    assert abs(result.max_drawdown_pct - expected_dd) < 0.01
+
+
+def test_drawdown_single_snapshot_with_dynamic_equity():
+    """Initial equity snapshot + live dynamic equity forms 2 valid observations."""
+    svc = DrawdownService()
+    rows = [_row("2023-01-01T00:00:00", 10000.0)]
+    result = svc.calculate(rows, current_equity=8000.0, as_of="2023-01-02T00:00:00")
+    assert result.status == DrawdownStatus.OK
+    assert result.running_peak_equity == 10000.0
+    assert result.current_equity == 8000.0
+    assert abs(result.current_drawdown_pct - 20.0) < 0.01
+
+
+def test_drawdown_with_dynamic_equity_new_high():
+    """Live dynamic equity that exceeds previous peak updates running peak with zero drawdown."""
+    svc = DrawdownService()
+    rows = [
+        _row("2023-01-01T00:00:00", 10000.0),
+        _row("2023-01-02T00:00:00", 10500.0),
+    ]
+    result = svc.calculate(rows, current_equity=12000.0, as_of="2023-01-03T00:00:00")
+    assert result.status == DrawdownStatus.OK
+    assert result.running_peak_equity == 12000.0
+    assert result.current_equity == 12000.0
+    assert result.current_drawdown_pct == 0.0
+
+
+def test_drawdown_with_dynamic_equity_total_loss():
+    """Live dynamic equity <= 0 correctly produces 100% drawdown."""
+    svc = DrawdownService()
+    rows = [
+        _row("2023-01-01T00:00:00", 10000.0),
+        _row("2023-01-02T00:00:00", 9500.0),
+    ]
+    result = svc.calculate(rows, current_equity=-500.0, as_of="2023-01-03T00:00:00")
+    assert result.status == DrawdownStatus.OK
+    assert result.running_peak_equity == 10000.0
+    assert result.current_equity == -500.0
+    assert result.current_drawdown_pct == 100.0
+
+
+def test_drawdown_snapshot_row_with_unrealized_pnl():
+    """Row with unrealized_pnl and current_cash parses true dynamic equity."""
+    svc = DrawdownService()
+    rows = [
+        {"timestamp": "2023-01-01T00:00:00", "current_equity": 10000.0, "current_cash": 10000.0, "unrealized_pnl": 0.0},
+        {"timestamp": "2023-01-02T00:00:00", "current_equity": 9990.0, "current_cash": 9990.0, "unrealized_pnl": -2990.0},
+    ]
+    result = svc.calculate(rows)
+    assert result.status == DrawdownStatus.OK
+    assert result.running_peak_equity == 10000.0
+    assert result.current_equity == 7000.0
+    assert abs(result.current_drawdown_pct - 30.0) < 0.01

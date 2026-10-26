@@ -20,6 +20,26 @@ class TradeMetrics(BaseModel):
     max_consecutive_losses: int
     average_holding_hours: float
 
+    @property
+    def post_cost_profit_factor(self) -> float:
+        """Explicit label: post-cost profit factor."""
+        return self.profit_factor
+
+    @property
+    def post_cost_net_pnl(self) -> float:
+        """Explicit label: net PnL after commissions and slippage."""
+        return self.net_pnl
+
+    @property
+    def total_execution_costs(self) -> float:
+        """Total execution costs (commissions + slippage)."""
+        return self.total_commission + self.total_slippage
+
+    @property
+    def pre_cost_gross_pnl(self) -> float:
+        """Explicit label: gross PnL prior to commission deductions."""
+        return self.gross_pnl
+
 class EquityMetrics(BaseModel):
     initial_capital: float
     final_equity: float

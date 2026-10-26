@@ -14,9 +14,11 @@ class MockStrategy(Strategy):
     def generate_signal(self, bars):
         if self.direction is None:
             return None
+        sl = 90 if self.direction == "LONG" else 110
+        tp = 110 if self.direction == "LONG" else 90
         return TradingSignal(
             symbol="BTC", timestamp=datetime.now(timezone.utc), direction=self.direction, strategy=self.name,
-            confidence=1.0, entry_price=100, reason="test", stop_loss=90, take_profit=110
+            confidence=1.0, entry_price=100, reason="test", stop_loss=sl, take_profit=tp
         )
 
 def test_ensemble_conflict_wait():

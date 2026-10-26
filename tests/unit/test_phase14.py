@@ -8,6 +8,7 @@ from app.analytics.models import FullAnalyticsReport, TradeMetrics, EquityMetric
 
 def create_mock_experiment(exp_id: str, status: str, dataset_id: str, return_pct: float, drawdown_pct: float, trades: int) -> ResearchExperiment:
     report = None
+    wf_results = []
     if status == "COMPLETED":
         report = FullAnalyticsReport(
             backtest_id=exp_id,
@@ -28,11 +29,20 @@ def create_mock_experiment(exp_id: str, status: str, dataset_id: str, return_pct
             failure_findings=[],
             strategy_comparisons=[]
         )
+        from app.research.models import WalkForwardResult, DataSplit
+        split = DataSplit(name="s1", symbol="BTC", start_time=datetime.now(timezone.utc), end_time=datetime.now(timezone.utc), row_count=100)
+        wf_results = [
+            WalkForwardResult(
+                window_id="wf_1",
+                train_split=split, validation_split=split, test_split=split,
+                train_report=report, validation_report=report, test_report=report
+            )
+        ]
         
     return ResearchExperiment(
         experiment_id=exp_id, dataset_id=dataset_id, symbols=["BTC"], timeframe="1h", strategy="Strat", configuration="conf",
         starting_capital=1000, random_seed=42, created_at=datetime.now(timezone.utc), status=status,
-        validation_results=[], out_of_sample_report=report, configuration_snapshot={"risk_per_trade_pct": 0.05}
+        validation_results=[], out_of_sample_report=report, walk_forward_results=wf_results, configuration_snapshot={"risk_per_trade_pct": 0.05}
     )
 
 def test_champion_challenger_validation():

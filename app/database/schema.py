@@ -343,6 +343,20 @@ CREATE TABLE IF NOT EXISTS paper_orders (
     FOREIGN KEY(portfolio_id) REFERENCES paper_portfolios(portfolio_id)
 );
 
+CREATE TABLE IF NOT EXISTS rejected_paper_orders (
+    rejection_id TEXT PRIMARY KEY,
+    portfolio_id TEXT NOT NULL,
+    decision_id TEXT,
+    symbol TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    strategy TEXT,
+    regime TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(portfolio_id) REFERENCES paper_portfolios(portfolio_id)
+);
+
 CREATE TABLE IF NOT EXISTS paper_positions (
     position_id TEXT PRIMARY KEY,
     portfolio_id TEXT NOT NULL,
@@ -441,7 +455,7 @@ def init_db():
             pass
 
         # Add regime to paper tables
-        for table in ['paper_positions', 'paper_closed_positions', 'paper_orders']:
+        for table in ['paper_positions', 'paper_closed_positions', 'paper_orders', 'rejected_paper_orders']:
             try:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN regime TEXT")
             except sqlite3.OperationalError:

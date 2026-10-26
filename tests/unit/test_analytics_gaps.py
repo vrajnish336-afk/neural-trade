@@ -29,13 +29,19 @@ def test_record_rejected_trade_persistence(temp_db):
     # Record a rejection
     repo.record_rejected_trade("default", "dec123", "BTC", "LONG", "Risk Limit", datetime.now(timezone.utc), "StrategyA")
     
+    # Main paper_orders table must remain clean (0 orders)
     orders = repo.get_recent_orders("default")
-    assert len(orders) == 1
+    assert len(orders) == 0
     
-    o = orders[0]
-    assert o["status"] == "REJECTED"
+    # Rejection recorded in dedicated rejected_paper_orders table
+    rejected = repo.get_rejected_orders("default")
+    assert len(rejected) == 1
+    
+    o = rejected[0]
+    assert o["decision"] == "LONG"
     assert o["reason"] == "Risk Limit"
     assert o["symbol"] == "BTC"
+    assert o["strategy"] == "StrategyA"
 
 def test_unrealized_pnl_snapshot_and_backward_compatibility(temp_db):
     # Test that unrealized_pnl is persisted in snapshot
@@ -78,5 +84,5 @@ def test_backward_compatibility_old_db(temp_db):
     repo.get_or_create_portfolio("default", 100.0)
     repo.record_rejected_trade("default", "dec123", "BTC", "LONG", "Risk Limit", datetime.now(timezone.utc), "StrategyA")
     
-    orders = repo.get_recent_orders("default")
-    assert orders[0]["reason"] == "Risk Limit"
+    rejected = repo.get_rejected_orders("default")
+    assert rejected[0]["reason"] == "Risk Limit"

@@ -47,6 +47,8 @@ class MeanReversionStrategy(Strategy):
         
         if current_close < lower_band:
             sl = max(0.01, current_close - (current_atr * 1.5))
+            risk = abs(current_close - sl)
+            tp = current_close + (3.0 * risk)
             return TradingSignal(
                 symbol=last_bar.symbol,
                 timestamp=last_bar.timestamp,
@@ -55,11 +57,14 @@ class MeanReversionStrategy(Strategy):
                 confidence=0.7,
                 entry_price=current_close,
                 stop_loss=sl,
-                take_profit=current_sma,
+                take_profit=tp,
                 reason="Price is significantly below mean"
             )
             
         if current_close > upper_band:
+            sl = current_close + (current_atr * 1.5)
+            risk = abs(current_close - sl)
+            tp = max(0.01, current_close - (3.0 * risk))
             return TradingSignal(
                 symbol=last_bar.symbol,
                 timestamp=last_bar.timestamp,
@@ -67,8 +72,8 @@ class MeanReversionStrategy(Strategy):
                 strategy=self.name,
                 confidence=0.6,
                 entry_price=current_close,
-                stop_loss=current_close + (current_atr * 1.5),
-                take_profit=current_sma,
+                stop_loss=sl,
+                take_profit=tp,
                 reason="Price is significantly above mean"
             )
             

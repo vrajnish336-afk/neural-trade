@@ -62,10 +62,14 @@ class BacktestEngine:
             return self._generate_empty_result()
             
         symbol_history = {bar.symbol: [] for bar in bars}
+        self.last_prices = {}
+        self.last_timestamps = {}
             
         for current_bar in bars:
             symbol_history[current_bar.symbol].append(current_bar)
             historical_slice = symbol_history[current_bar.symbol]
+            self.last_prices[current_bar.symbol] = current_bar.close
+            self.last_timestamps[current_bar.symbol] = current_bar.timestamp
             
             # Daily resets
             if self.current_day is None or current_bar.timestamp.date() != self.current_day:
@@ -139,10 +143,13 @@ class BacktestEngine:
             # Update equity curve
             mtm_equity = self.equity
             for pos in self.portfolio.state.open_positions:
+                sym_price = self.last_prices.get(pos['symbol'])
+                if sym_price is None:
+                    sym_price = pos['entry_price']
                 if pos['direction'] == 'LONG':
-                    unrealized_pnl = (current_bar.close - pos['entry_price']) * pos['quantity']
+                    unrealized_pnl = (sym_price - pos['entry_price']) * pos['quantity']
                 else:
-                    unrealized_pnl = (pos['entry_price'] - current_bar.close) * pos['quantity']
+                    unrealized_pnl = (pos['entry_price'] - sym_price) * pos['quantity']
                 mtm_equity += unrealized_pnl
                 
             self.equity_curve.append({
@@ -152,10 +159,9 @@ class BacktestEngine:
                 'exposure': mtm_equity - self.equity
             })
 
-        for pos in list(self.portfolio.state.open_positions):
-            self._force_close_position(pos, bars[-1], reason="End of backtest")
-            
-        logger.info("Backtest completed. Final equity: %.2f", self.equity)
+        # Fold-end handling: Do NOT force close unresolved positions.
+        # Leave them in open_positions so they don't contaminate realized strategy stats.
+        logger.info("Backtest completed. Realized cash: %.2f, Open positions: %d", self.equity, len(self.portfolio.state.open_positions))
         return self._generate_result()
 
     def _evaluate_exits(self, current_bar: MarketBar) -> None:
@@ -245,9 +251,11 @@ class BacktestEngine:
         else:
             gross_pnl = (pos['entry_price'] - actual_price) * pos['quantity']
             
-        # Slippage is embedded in actual_price, so only commission reduces net PnL further
-        net_pnl = gross_pnl - comm
-        self.equity += net_pnl
+        # Slippage is embedded in actual_price. True trade net PnL must also subtract entry_cost.
+        net_pnl = gross_pnl - comm - pos['entry_cost']
+        
+        # Equity ALREADY had entry_cost deducted at entry, so we add back gross_pnl minus exit commission.
+        self.equity += (gross_pnl - comm)
         
         trade = BacktestTrade(
             symbol=pos['symbol'],
@@ -281,11 +289,48 @@ class BacktestEngine:
         self.portfolio.state.remove_position(pos['symbol'], pos['direction'])
 
     def _force_close_position(self, pos: Dict, current_bar: MarketBar, reason: str) -> None:
-        self._close_position(current_bar.timestamp, current_bar.close, pos, reason)
+        sym_price = self.last_prices.get(pos['symbol'])
+        sym_time = self.last_timestamps.get(pos['symbol'])
+        if sym_price is None or sym_time is None:
+            logger.warning("Cannot force close position %s: No price history found.", pos['symbol'])
+            return
+            
+        self._close_position(sym_time, sym_price, pos, reason)
 
     def _generate_result(self) -> BacktestResult:
+        unrealized_mtm = 0.0
+        for pos in self.portfolio.state.open_positions:
+            sym_price = self.last_prices.get(pos['symbol'], pos['entry_price'])
+            if pos['direction'] == 'LONG':
+                unrealized_mtm += (sym_price - pos['entry_price']) * pos['quantity']
+            else:
+                unrealized_mtm += (pos['entry_price'] - sym_price) * pos['quantity']
+                
+        final_equity_mtm = self.equity + unrealized_mtm
+        total_return_pct = ((final_equity_mtm - self.initial_capital) / self.initial_capital) * 100
+
         if not self.closed_trades:
-            return self._generate_empty_result()
+            return BacktestResult(
+                initial_capital=self.initial_capital,
+                final_equity=final_equity_mtm,
+                total_return_pct=total_return_pct,
+                number_of_trades=0,
+                winning_trades=0,
+                losing_trades=0,
+                win_rate=0.0,
+                gross_profit=0.0,
+                gross_loss=0.0,
+                net_profit=0.0,
+                max_drawdown_pct=calculate_drawdown([pt['equity'] for pt in self.equity_curve]) if self.equity_curve else 0.0,
+                average_trade_result=0.0,
+                profit_factor=0.0,
+                average_holding_period_hours=0.0,
+                unresolved_positions_count=len(self.portfolio.state.open_positions),
+                unrealized_mtm=unrealized_mtm,
+                trades=[],
+                equity_curve=self.equity_curve,
+                telemetry_snapshot=telemetry.export_snapshot() if 'telemetry' in globals() or 'telemetry' in locals() else __import__('app.diagnostics.telemetry', fromlist=['telemetry']).telemetry.export_snapshot()
+            )
             
         winning_trades = [t for t in self.closed_trades if t.realized_pnl > 0]
         losing_trades = [t for t in self.closed_trades if t.realized_pnl <= 0]
@@ -294,7 +339,6 @@ class BacktestEngine:
         gross_loss = abs(sum(t.realized_pnl for t in losing_trades))
         net_profit = gross_profit - gross_loss
         
-        total_return_pct = ((self.equity - self.initial_capital) / self.initial_capital) * 100
         win_rate = (len(winning_trades) / len(self.closed_trades)) * 100
         
         holding_periods = [(t.exit_time - t.entry_time).total_seconds() / 3600 for t in self.closed_trades]
@@ -302,7 +346,7 @@ class BacktestEngine:
         
         return BacktestResult(
             initial_capital=self.initial_capital,
-            final_equity=self.equity,
+            final_equity=final_equity_mtm,
             total_return_pct=total_return_pct,
             number_of_trades=len(self.closed_trades),
             winning_trades=len(winning_trades),
@@ -315,26 +359,12 @@ class BacktestEngine:
             average_trade_result=net_profit / len(self.closed_trades),
             profit_factor=calculate_profit_factor(gross_profit, gross_loss),
             average_holding_period_hours=avg_holding,
+            unresolved_positions_count=len(self.portfolio.state.open_positions),
+            unrealized_mtm=unrealized_mtm,
             trades=self.closed_trades,
+            equity_curve=self.equity_curve,
             telemetry_snapshot=telemetry.export_snapshot() if 'telemetry' in globals() or 'telemetry' in locals() else __import__('app.diagnostics.telemetry', fromlist=['telemetry']).telemetry.export_snapshot()
         )
 
     def _generate_empty_result(self) -> BacktestResult:
-        return BacktestResult(
-            initial_capital=self.initial_capital,
-            final_equity=self.initial_capital,
-            total_return_pct=0.0,
-            number_of_trades=0,
-            winning_trades=0,
-            losing_trades=0,
-            win_rate=0.0,
-            gross_profit=0.0,
-            gross_loss=0.0,
-            net_profit=0.0,
-            max_drawdown_pct=0.0,
-            average_trade_result=0.0,
-            profit_factor=0.0,
-            average_holding_period_hours=0.0,
-            trades=[],
-            telemetry_snapshot=__import__('app.diagnostics.telemetry', fromlist=['telemetry']).telemetry.export_snapshot()
-        )
+        return self._generate_result() # Refactored to handle empty trades above

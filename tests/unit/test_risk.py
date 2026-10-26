@@ -51,3 +51,26 @@ def test_portfolio_limits():
     
     limits.reset_daily_loss()
     assert limits.can_open_new_position(0, 0.0, 10000.0)[0] is True
+
+
+def test_rehydrate_from_paper_ledger_24h_and_streak():
+    from datetime import datetime, timezone, timedelta
+    limits = PortfolioRiskLimits(initial_equity=10000.0, daily_loss_limit_pct=0.05, loss_streak_threshold=3, cooldown_bars=5)
+    now = datetime(2026, 10, 26, 12, 0, tzinfo=timezone.utc)
+    
+    closed_positions = [
+        {"exit_time": (now - timedelta(hours=2)).isoformat(), "realized_pnl": -200.0},
+        {"exit_time": (now - timedelta(hours=5)).isoformat(), "realized_pnl": -150.0},
+        {"exit_time": (now - timedelta(hours=10)).isoformat(), "realized_pnl": -100.0},
+        {"exit_time": (now - timedelta(hours=18)).isoformat(), "realized_pnl": 300.0},
+        {"exit_time": (now - timedelta(hours=30)).isoformat(), "realized_pnl": -500.0},
+    ]
+    
+    limits.rehydrate_from_paper_ledger(closed_positions, as_of=now)
+    
+    assert limits.daily_loss == 450.0
+    assert limits.loss_streak == 3
+    assert limits.cooldown_remaining == 5
+    can_open, reason, limit_name = limits.can_open_new_position(0, 0.0, 10000.0)
+    assert not can_open
+    assert limit_name == "COOLDOWN"

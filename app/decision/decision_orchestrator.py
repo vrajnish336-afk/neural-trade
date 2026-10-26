@@ -1,6 +1,7 @@
 import logging
+import math
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.core.models import MarketBar, TradingSignal, MarketRegimeResult, MarketIntelligence
 from app.decision.models import TraderDecision, ScenarioAnalysis
@@ -96,16 +97,28 @@ class DecisionOrchestrator:
         self,
         symbol: str,
         bars: List[MarketBar],
-        current_equity: float,
-        current_positions_count: int,
-        current_exposure: float,
-        portfolio_id: str = "default_paper"
+        arg3: Any = 10000.0,
+        arg4: Any = 0,
+        arg5: Any = 0.0,
+        portfolio_id: str = "default_paper",
+        **kwargs
     ) -> TraderDecision:
         if not bars:
             return self._build_no_trade(symbol, "INSUFFICIENT", "No market bars provided.")
             
         latest_bar = bars[-1]
         timestamp = latest_bar.timestamp
+
+        # Handle flexible calling conventions (with or without as_of timestamp as 3rd arg)
+        if isinstance(arg3, (datetime, str)) and isinstance(arg4, (int, float)):
+            timestamp = arg3 if isinstance(arg3, datetime) else latest_bar.timestamp
+            current_equity = float(arg4)
+            current_positions_count = int(arg5) if isinstance(arg5, (int, float)) else 0
+            current_exposure = float(kwargs.get("current_exposure", 0.0))
+        else:
+            current_equity = float(arg3) if isinstance(arg3, (int, float)) else 10000.0
+            current_positions_count = int(arg4) if isinstance(arg4, (int, float)) else 0
+            current_exposure = float(arg5) if isinstance(arg5, (int, float)) else 0.0
         
         # 1. Market Context / Regime
         from app.analysis.regime import detect_market_regime
@@ -114,20 +127,48 @@ class DecisionOrchestrator:
         # 2. Intelligence
         intelligence = None
         try:
-            intelligence = self.intelligence_service.generate_intelligence(symbol, timestamp)
+            intelligence = self.intelligence_service.generate_intelligence(symbol, timestamp, bars)
         except Exception as e:
             logger.warning(f"Failed to fetch intelligence: {e}")
         
-        # Multi-Timeframe Synchronization via MultiTimeframeEngine
+        # Multi-Timeframe Synchronization via MultiTimeframeEngine & resample_bars
+        from app.analysis.timeframes import resample_to_market_bars
+
         h4_bars = None
         d1_bars = None
         if self.data_provider:
             try:
                 from datetime import timedelta
-                h4_bars = self.data_provider.get_historical_bars(symbol, "4h", start_time=timestamp - timedelta(days=30), end_time=timestamp)
-                d1_bars = self.data_provider.get_historical_bars(symbol, "1d", start_time=timestamp - timedelta(days=100), end_time=timestamp)
+                raw_h4 = self.data_provider.get_historical_bars(symbol, "4h", start_time=timestamp - timedelta(days=30), end_time=timestamp)
+                if isinstance(raw_h4, list) and raw_h4:
+                    h4_bars = raw_h4
+                raw_d1 = self.data_provider.get_historical_bars(symbol, "1d", start_time=timestamp - timedelta(days=100), end_time=timestamp)
+                if isinstance(raw_d1, list) and raw_d1:
+                    d1_bars = raw_d1
             except Exception as e:
                 logger.warning(f"Failed to fetch HTF bars for {symbol}: {e}")
+
+        # Determine bar step/frequency to avoid downsampling higher-timeframe inputs
+        bar_step_seconds = 3600
+        if len(bars) >= 2:
+            t1 = bars[0].timestamp
+            t2 = bars[1].timestamp
+            delta = abs((t2 - t1).total_seconds())
+            if delta > 0:
+                bar_step_seconds = delta
+
+        # If HTF bars not supplied by data_provider, synthesize from lower-timeframe bars using resample_bars
+        if not h4_bars and bars and bar_step_seconds < 14400 and len(bars) >= 8:
+            try:
+                h4_bars = resample_to_market_bars(bars, '4h')
+            except Exception as e:
+                logger.warning(f"Failed to resample 4H bars for {symbol}: {e}")
+
+        if not d1_bars and bars and bar_step_seconds < 86400 and len(bars) >= 48:
+            try:
+                d1_bars = resample_to_market_bars(bars, '1d')
+            except Exception as e:
+                logger.warning(f"Failed to resample 1D bars for {symbol}: {e}")
                 
         mtf_context = self.mtf_engine.align_timeframes(
             symbol=symbol,
@@ -228,9 +269,25 @@ class DecisionOrchestrator:
         # 5.5 Portfolio Drawdown Risk Check
         drawdown_veto = False
         drawdown_reason = None
+        eval_equity = current_equity
         if self.paper_repository and self.drawdown_service:
+            # Dynamically compute open unrealized PnL based on latest market price
+            unrealized = self.paper_repository.calculate_unrealized_pnl(
+                portfolio_id, 
+                current_prices={symbol: latest_bar.close}
+            )
+            eval_equity = current_equity + unrealized
+            self.paper_repository.sync_dynamic_equity(
+                portfolio_id,
+                current_prices={symbol: latest_bar.close}
+            )
             snapshots = self.paper_repository.get_equity_snapshots(portfolio_id, as_of=timestamp)
-            dd_result = self.drawdown_service.calculate(snapshots, has_partial_history=(len(snapshots) < 3))
+            dd_result = self.drawdown_service.calculate(
+                snapshots, 
+                has_partial_history=(len(snapshots) < 3),
+                current_equity=eval_equity,
+                as_of=timestamp.isoformat() if hasattr(timestamp, 'isoformat') else str(timestamp)
+            )
             dd_approved, dd_reason = self.risk_engine.check_drawdown(dd_result)
             if not dd_approved:
                 drawdown_veto = True
@@ -294,9 +351,32 @@ class DecisionOrchestrator:
                         circuit_breaker_veto = True
                         circuit_breaker_reason = "Blow-Off-Top Circuit Breaker Active: Price >= Threshold and Volatility is Extreme/Missing."
 
+            # 6.4 Multi-Timeframe Alignment Gate
+            mtf_veto = False
+            mtf_veto_reason = None
+            is_long = signal.direction in ("LONG", "BUY")
+            is_short = signal.direction in ("SHORT", "SELL")
+            
+            htf_trends = [t for t in (mtf_context.h4_trend, mtf_context.d1_trend) if t != "UNKNOWN"]
+            
+            if is_long:
+                # A LONG signal should only pass if the higher timeframe is also bullish
+                # (or at least not strictly bearish)
+                if any(t == "BEARISH" for t in htf_trends):
+                    mtf_veto = True
+                    conflicts = [f"{tf} is {t}" for tf, t in [("4H", mtf_context.h4_trend), ("1D", mtf_context.d1_trend)] if t == "BEARISH"]
+                    mtf_veto_reason = f"LONG signal rejected: Higher timeframe trend is conflicting ({', '.join(conflicts)})."
+            elif is_short:
+                # A SHORT signal should only pass if the higher timeframe is also bearish
+                # (or at least not strictly bullish)
+                if any(t == "BULLISH" for t in htf_trends):
+                    mtf_veto = True
+                    conflicts = [f"{tf} is {t}" for tf, t in [("4H", mtf_context.h4_trend), ("1D", mtf_context.d1_trend)] if t == "BULLISH"]
+                    mtf_veto_reason = f"SHORT signal rejected: Higher timeframe trend is conflicting ({', '.join(conflicts)})."
+
             risk_decision = self.risk_engine.evaluate_trade(
                 signal=signal,
-                current_equity=current_equity,
+                current_equity=eval_equity,
                 current_positions_count=current_positions_count,
                 current_exposure=current_exposure
             )
@@ -319,6 +399,13 @@ class DecisionOrchestrator:
                 decision_val = "WAIT"
                 rationale = f"Signal generated but blocked by Circuit Breaker: {risk_reason}"
                 main_risks.append("Blow-Off-Top Circuit Breaker")
+            elif mtf_veto:
+                risk_approved = False
+                risk_reason = mtf_veto_reason
+                decision_val = "WAIT"
+                rationale = f"Signal generated but blocked by Multi-Timeframe Alignment: {risk_reason}"
+                main_risks.append("Multi-Timeframe Conflict")
+                main_risks.append(mtf_veto_reason)
             elif not risk_decision.approved:
                 risk_approved = False
                 risk_reason = risk_decision.rejection_reason
@@ -351,13 +438,48 @@ class DecisionOrchestrator:
         else:
             world_ctx_str = intelligence.sentiment.label if intelligence else "UNKNOWN"
 
+        # Compute data_freshness dynamically by comparing latest bar's timestamp against current UTC time
+        now_utc = datetime.now(timezone.utc)
+        bar_ts = latest_bar.timestamp
+        if getattr(bar_ts, "tzinfo", None) is None:
+            bar_ts = bar_ts.replace(tzinfo=timezone.utc)
+        else:
+            bar_ts = bar_ts.astimezone(timezone.utc)
+
+        age_seconds = (now_utc - bar_ts).total_seconds()
+        if len(bars) < 5:
+            dynamic_freshness = "INSUFFICIENT"
+        elif age_seconds <= 86400 * 2:  # within 48h considered fresh
+            dynamic_freshness = "FRESH"
+        else:
+            dynamic_freshness = "STALE"
+
+        # Compute volatility_context logically based on price variance from the provided bars
+        if len(bars) >= 2:
+            closes = [b.close for b in bars]
+            mean_close = sum(closes) / len(closes)
+            if mean_close > 0:
+                variance = sum((c - mean_close) ** 2 for c in closes) / len(closes)
+                std_dev = math.sqrt(variance)
+                vol_ratio = std_dev / mean_close
+                if vol_ratio > 0.08:
+                    computed_volatility_context = "HIGH"
+                elif vol_ratio < 0.015:
+                    computed_volatility_context = "LOW"
+                else:
+                    computed_volatility_context = "NORMAL"
+            else:
+                computed_volatility_context = "UNKNOWN"
+        else:
+            computed_volatility_context = "UNKNOWN"
+
         return TraderDecision(
             symbol=symbol,
             timestamp=timestamp,
-            data_freshness="FRESH",
+            data_freshness=dynamic_freshness,
             regime=regime.regime,
             trend_context=regime.regime,
-            volatility_context="NORMAL",
+            volatility_context=computed_volatility_context,
             multi_timeframe_alignment=mtf_alignment if 'mtf_alignment' in locals() else "UNKNOWN",
             portfolio_correlation=portfolio_correlation if 'portfolio_correlation' in locals() else "UNKNOWN",
             strategy_signals=[
@@ -375,6 +497,8 @@ class DecisionOrchestrator:
             confidence=confidence,
             decision=decision_val,
             evaluated_price=latest_bar.close,
+            stop_loss=signal.stop_loss if signal else None,
+            take_profit=signal.take_profit if signal else None,
             risk_gate_approved=risk_approved,
             risk_gate_reason=risk_reason,
             paper_execution_eligible=risk_approved,
@@ -410,6 +534,8 @@ class DecisionOrchestrator:
             confidence=0.0,
             decision="NO TRADE",
             evaluated_price=0.0,
+            stop_loss=None,
+            take_profit=None,
             risk_gate_approved=False,
             risk_gate_reason="No data or no signal",
             paper_execution_eligible=False

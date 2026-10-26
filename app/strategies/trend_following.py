@@ -47,6 +47,8 @@ class TrendFollowingStrategy(Strategy):
         # Golden Cross -> LONG
         if current_fast > current_slow and prev_fast <= prev_slow:
             sl = max(0.01, last_bar.close - (current_atr * 2))
+            risk = abs(last_bar.close - sl)
+            tp = last_bar.close + (3.0 * risk)
             return TradingSignal(
                 symbol=last_bar.symbol,
                 timestamp=last_bar.timestamp,
@@ -55,13 +57,15 @@ class TrendFollowingStrategy(Strategy):
                 confidence=0.8,
                 entry_price=last_bar.close,
                 stop_loss=sl,
-                take_profit=last_bar.close + (current_atr * 4),
+                take_profit=tp,
                 reason="Fast SMA crossed above Slow SMA"
             )
             
         # Death Cross -> SHORT
         if current_fast < current_slow and prev_fast >= prev_slow:
-            tp = max(0.01, last_bar.close - (current_atr * 4))
+            sl = last_bar.close + (current_atr * 2)
+            risk = abs(last_bar.close - sl)
+            tp = max(0.01, last_bar.close - (3.0 * risk))
             return TradingSignal(
                 symbol=last_bar.symbol,
                 timestamp=last_bar.timestamp,
@@ -69,7 +73,7 @@ class TrendFollowingStrategy(Strategy):
                 strategy=self.name,
                 confidence=0.8,
                 entry_price=last_bar.close,
-                stop_loss=last_bar.close + (current_atr * 2),
+                stop_loss=sl,
                 take_profit=tp,
                 reason="Fast SMA crossed below Slow SMA"
             )

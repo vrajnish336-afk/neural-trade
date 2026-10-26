@@ -57,12 +57,32 @@ class ASTSecurityValidator(ast.NodeVisitor):
 
     def visit_Attribute(self, node: ast.Attribute):
         # Prevent access to dunder attributes that might allow sandbox escape
-        if node.attr.startswith("__") and node.attr.endswith("__"):
+        if "__" in node.attr or node.attr.startswith("__"):
             # Block all dunders to be safe (fail closed)
             self.errors.append(f"Illegal dunder attribute access: {node.attr}")
+            
+        blocked_attrs = {
+            "system", "popen", "run", "call", "check_output", "spawn",
+            "to_csv", "read_csv", "to_excel", "read_excel", "to_json", "read_json",
+            "to_sql", "read_sql", "to_pickle", "read_pickle", "to_parquet", "read_parquet",
+            "to_feather", "read_feather", "to_html", "read_html", "to_clipboard", "read_clipboard",
+            "read_table"
+        }
+        if node.attr in blocked_attrs:
+            self.errors.append(f"Potentially dangerous attribute access detected: {node.attr}")
+            
         self.generic_visit(node)
         
     def visit_Name(self, node: ast.Name):
-        if node.id.startswith("__") and node.id.endswith("__"):
+        if "__" in node.id or node.id.startswith("__") or node.id == "__import__":
             self.errors.append(f"Illegal dunder name access: {node.id}")
+            
+        blocked_builtins = {
+            "exec", "eval", "compile", "open", "__import__",
+            "globals", "locals", "vars", "dir", "getattr", "setattr", "delattr",
+            "memoryview", "bytearray"
+        }
+        if node.id in blocked_builtins:
+            self.errors.append(f"Illegal builtin access detected: {node.id}")
+            
         self.generic_visit(node)

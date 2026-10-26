@@ -27,51 +27,9 @@ class PaperSimulationRunner:
         
     def _evaluate_exits(self, current_bar: MarketBar) -> None:
         """
-        Evaluate if current bar hits SL/TP for any open positions.
+        Evaluate if current bar hits SL/TP for any open positions via broker monitoring.
         """
-        open_pos = [p for p in self.broker.repo.get_open_positions(self.portfolio_id) if p['symbol'] == current_bar.symbol]
-        
-        for pos in open_pos:
-            sl_hit = False
-            tp_hit = False
-            exit_price = None
-            
-            if pos['direction'] == 'LONG':
-                if pos['stop_loss'] and current_bar.open < pos['stop_loss']:
-                    sl_hit = True
-                    exit_price = current_bar.open
-                elif pos['stop_loss'] and current_bar.low <= pos['stop_loss']:
-                    sl_hit = True
-                    exit_price = pos['stop_loss']
-                    
-                if pos['take_profit'] and current_bar.open > pos['take_profit']:
-                    tp_hit = True
-                    exit_price = current_bar.open if not exit_price else exit_price
-                elif pos['take_profit'] and current_bar.high >= pos['take_profit']:
-                    tp_hit = True
-                    exit_price = pos['take_profit'] if not exit_price else exit_price
-            else:
-                if pos['stop_loss'] and current_bar.open > pos['stop_loss']:
-                    sl_hit = True
-                    exit_price = current_bar.open
-                elif pos['stop_loss'] and current_bar.high >= pos['stop_loss']:
-                    sl_hit = True
-                    exit_price = pos['stop_loss']
-                    
-                if pos['take_profit'] and current_bar.open < pos['take_profit']:
-                    tp_hit = True
-                    exit_price = current_bar.open if not exit_price else exit_price
-                elif pos['take_profit'] and current_bar.low <= pos['take_profit']:
-                    tp_hit = True
-                    exit_price = pos['take_profit'] if not exit_price else exit_price
-                    
-            if sl_hit and tp_hit:
-                exit_price = exit_price if exit_price is not None else pos['stop_loss']
-                self.broker.execute_exit(pos['position_id'], exit_price, current_bar.timestamp, reason="SL_AMBIGUOUS_WORST")
-            elif sl_hit:
-                self.broker.execute_exit(pos['position_id'], exit_price, current_bar.timestamp, reason="SL_HIT")
-            elif tp_hit:
-                self.broker.execute_exit(pos['position_id'], exit_price, current_bar.timestamp, reason="TP_HIT")
+        self.broker.monitor_positions(current_bar)
 
     def run(self, symbol: str, bars: List[MarketBar], context_bars: Optional[List[MarketBar]] = None) -> None:
         """
@@ -118,8 +76,12 @@ class PaperSimulationRunner:
                     # Calculate a dynamic risk size from orchestrator logic if needed,
                     # For paper simulation, we mock the signal since broker needs position_size.
                     from app.core.models import TradingSignal
-                    sl = decision.evaluated_price * 0.95 if decision.decision == "LONG" else decision.evaluated_price * 1.05
-                    tp = decision.evaluated_price * 1.10 if decision.decision == "LONG" else decision.evaluated_price * 0.90
+                    sl = decision.stop_loss if decision.stop_loss is not None else (decision.evaluated_price * 0.95 if decision.decision == "LONG" else decision.evaluated_price * 1.05)
+                    risk = abs(decision.evaluated_price - sl)
+                    if decision.take_profit is not None:
+                        tp = decision.take_profit
+                    else:
+                        tp = decision.evaluated_price + (3.0 * risk) if decision.decision == "LONG" else max(0.01, decision.evaluated_price - (3.0 * risk))
 
                     mock_sig = TradingSignal(
                         symbol=symbol, timestamp=bar.timestamp, direction=decision.decision,

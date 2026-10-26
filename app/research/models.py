@@ -92,6 +92,10 @@ class ResearchExperiment(BaseModel):
     walk_forward_results: List[WalkForwardResult] = []
     stress_test_results: List[StressTestResult] = []
     parameter_sensitivity: List[ParameterSensitivityRun] = []
+    walk_forward_artifact: Optional[Any] = None
+    artifact_id: Optional[str] = None
+    persistence_failed: bool = False
+    require_persisted_evidence: bool = False
     
 def get_sample_size_warning(n: int) -> str:
     if n < 5: return "VERY_LOW_SAMPLE"

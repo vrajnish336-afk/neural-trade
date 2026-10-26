@@ -23,9 +23,9 @@ class PortfolioRiskLimits:
         if self.cooldown_remaining > 0:
             self.cooldown_remaining -= 1
             
-    def rehydrate_from_paper_ledger(self, closed_positions: list) -> None:
-        """Rehydrates risk state from persisted paper ledger."""
-        from datetime import datetime, timezone
+    def rehydrate_from_paper_ledger(self, closed_positions: list, as_of=None) -> None:
+        """Rehydrates risk state from persisted paper ledger using a 24-hour rolling window."""
+        from datetime import datetime, timezone, timedelta
         
         self.loss_streak = 0
         self.daily_loss = 0.0
@@ -34,11 +34,24 @@ class PortfolioRiskLimits:
         if not closed_positions:
             return
             
-        now_date = datetime.now(timezone.utc).date()
+        now = as_of or datetime.now(timezone.utc)
+        if getattr(now, "tzinfo", None) is None:
+            now = now.replace(tzinfo=timezone.utc)
+            
+        cutoff = now - timedelta(hours=24)
         for pos in closed_positions:
-            exit_time_str = pos['exit_time']
-            exit_time = datetime.fromisoformat(exit_time_str).astimezone(timezone.utc)
-            if exit_time.date() == now_date:
+            exit_time_val = pos['exit_time']
+            if isinstance(exit_time_val, str):
+                exit_time = datetime.fromisoformat(exit_time_val)
+            else:
+                exit_time = exit_time_val
+                
+            if getattr(exit_time, "tzinfo", None) is None:
+                exit_time = exit_time.replace(tzinfo=timezone.utc)
+            else:
+                exit_time = exit_time.astimezone(timezone.utc)
+                
+            if exit_time >= cutoff:
                 if pos['realized_pnl'] < 0:
                     self.daily_loss += abs(pos['realized_pnl'])
                     
@@ -71,18 +84,21 @@ class PortfolioRiskLimits:
         Evaluates whether a new position can be opened based on risk limits.
         Returns: (approved, reason, limit_name)
         """
+        if current_equity <= 0:
+            return False, "current equity depleted.", "EQUITY_DEPLETED"
+
         if self.cooldown_remaining > 0:
-            return False, f"cooldown active for {self.cooldown_remaining} more bars.", "Cooldown"
+            return False, f"cooldown active for {self.cooldown_remaining} more bars.", "COOLDOWN"
             
         if current_positions_count >= self.max_positions:
-            return False, "maximum position count reached.", "Max Positions"
+            return False, "maximum position count reached.", "MAX_CONCURRENT_POSITIONS"
             
         if (current_exposure / current_equity) >= self.max_exposure_pct:
-            return False, "maximum exposure limit reached.", "Max Exposure"
+            return False, "maximum exposure limit reached.", "MAX_EXPOSURE"
             
         # If today's loss has exceeded the daily limit
         max_allowed_loss = current_equity * self.daily_loss_limit_pct
         if self.daily_loss >= max_allowed_loss:
-            return False, "maximum daily loss limit reached.", "Daily Loss"
+            return False, "maximum daily loss limit reached.", "DAILY_LOSS_LIMIT"
             
         return True, "", ""

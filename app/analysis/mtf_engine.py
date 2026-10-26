@@ -28,22 +28,35 @@ class MultiTimeframeEngine:
             return dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
 
-    def _get_trend(self, bars: List[MarketBar]) -> str:
-        """Calculates SMA20 vs SMA50 trend for a given bar series."""
-        if len(bars) < 20:
+    def _get_trend(self, bars: List[MarketBar], min_periods: int = 20) -> str:
+        """Calculates trend for a given bar series."""
+        if len(bars) < min_periods:
+            if len(bars) >= 5 and min_periods <= 10:
+                sma = sum(b.close for b in bars) / len(bars)
+                if bars[-1].close > sma * 1.005:
+                    return "BULLISH"
+                elif bars[-1].close < sma * 0.995:
+                    return "BEARISH"
+                else:
+                    return "NEUTRAL"
             return "UNKNOWN"
         sma20 = sum(b.close for b in bars[-20:]) / 20.0
         if len(bars) >= 50:
             sma50 = sum(b.close for b in bars[-50:]) / 50.0
-            if sma20 > sma50 * 1.01:
+            if sma20 > sma50 * 1.005:
                 return "BULLISH"
-            elif sma20 < sma50 * 0.99:
+            elif sma20 < sma50 * 0.995:
                 return "BEARISH"
             else:
                 return "NEUTRAL"
         else:
-            # Fallback for shorter series using recent slope
-            return "BULLISH" if bars[-1].close > sma20 else "BEARISH"
+            # Fallback for shorter series using close vs sma20
+            if bars[-1].close > sma20 * 1.005:
+                return "BULLISH"
+            elif bars[-1].close < sma20 * 0.995:
+                return "BEARISH"
+            else:
+                return "NEUTRAL"
 
     def align_timeframes(
         self,
@@ -75,9 +88,9 @@ class MultiTimeframeEngine:
                 is_fresh=False
             )
 
-        h1_trend = self._get_trend(valid_h1)
-        h4_trend = self._get_trend(valid_h4) if valid_h4 else "UNKNOWN"
-        d1_trend = self._get_trend(valid_d1) if valid_d1 else "UNKNOWN"
+        h1_trend = self._get_trend(valid_h1, min_periods=20)
+        h4_trend = self._get_trend(valid_h4, min_periods=10) if valid_h4 else "UNKNOWN"
+        d1_trend = self._get_trend(valid_d1, min_periods=10) if valid_d1 else "UNKNOWN"
 
         # Determine alignment
         if h1_trend == "UNKNOWN" and h4_trend == "UNKNOWN" and d1_trend == "UNKNOWN":

@@ -155,3 +155,11 @@ class PaperExecutionAdapter(IOrderExecutionAdapter):
     def get_portfolio_state(self) -> PortfolioState:
         """Delegate portfolio state retrieval to StreamingPaperBroker."""
         return self.streaming_broker.get_realtime_portfolio()
+
+    def execute_exit(self, position_id: str, exit_price: float, timestamp: datetime, reason: str = "MANUAL_EXIT") -> bool:
+        """Delegate exit execution safely to StreamingPaperBroker."""
+        return self.streaming_broker.execute_exit(position_id, exit_price, timestamp, reason=reason)
+
+    def monitor_positions(self, current_bar: MarketBar) -> List[dict]:
+        """Delegate position monitoring to StreamingPaperBroker."""
+        return self.streaming_broker.monitor_positions(current_bar)

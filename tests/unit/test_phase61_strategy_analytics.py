@@ -108,8 +108,10 @@ def test_paper_orders_rejected_strategy_persistence():
     )
     
     orders = repo.get_recent_orders('port1', limit=10)
-    assert len(orders) == 1
-    assert orders[0]['strategy'] == 'MeanReversion'
+    assert len(orders) == 0
+    rejected = repo.get_rejected_orders('port1', limit=10)
+    assert len(rejected) == 1
+    assert rejected[0]['strategy'] == 'MeanReversion'
 
 def test_paper_orders_exit_strategy_persistence():
     fd, path = tempfile.mkstemp()

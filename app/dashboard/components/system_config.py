@@ -2,12 +2,73 @@ import streamlit as st
 import pandas as pd
 from app.config import config
 from app.learning.paper_evolution_engine import SAFE_PARAMETERS
+from app.risk.limits import PortfolioRiskLimits
+from app.execution.paper_repository import PaperRepository
 
 def render_system_config_tab():
     st.markdown("## SYSTEM CONFIGURATION & HEALTH")
     st.warning("READ-ONLY VIEW. PAPER TRADING ONLY. LIVE TRADING DISABLED.")
     
-    st.markdown("### Global Safety & Risk Limits")
+    # 1. Instantiate PortfolioRiskLimits reflecting actual runtime risk parameters
+    try:
+        repo = PaperRepository()
+        portfolio = repo.get_or_create_portfolio("default_paper")
+        initial_equity = float(portfolio['initial_equity']) if portfolio else 10000.0
+        closed_positions = repo.get_closed_positions("default_paper", limit=1000)
+    except Exception:
+        initial_equity = 10000.0
+        closed_positions = []
+
+    # Runtime parameters
+    max_pos = int(getattr(config, "MAX_POSITIONS", 5)) if hasattr(config, "MAX_POSITIONS") else 5
+    max_exp = float(getattr(config, "MAX_EXPOSURE_PCT", 1.0)) if hasattr(config, "MAX_EXPOSURE_PCT") else 1.0
+    daily_limit = float(getattr(config, "DAILY_LOSS_LIMIT_PCT", 0.05)) if hasattr(config, "DAILY_LOSS_LIMIT_PCT") else 0.05
+    streak_thresh = int(getattr(config, "LOSS_STREAK_THRESHOLD", 3)) if hasattr(config, "LOSS_STREAK_THRESHOLD") else 3
+    cooldown = int(getattr(config, "COOLDOWN_BARS", 5)) if hasattr(config, "COOLDOWN_BARS") else 5
+    dd_halt = float(getattr(config, "MAX_DRAWDOWN_HALT_PCT", 20.0)) if hasattr(config, "MAX_DRAWDOWN_HALT_PCT") else 20.0
+
+    limits = PortfolioRiskLimits(
+        initial_equity=initial_equity,
+        max_positions=max_pos,
+        max_exposure_pct=max_exp,
+        daily_loss_limit_pct=daily_limit,
+        loss_streak_threshold=streak_thresh,
+        cooldown_bars=cooldown,
+        max_drawdown_halt_pct=dd_halt
+    )
+    if closed_positions:
+        limits.rehydrate_from_paper_ledger(closed_positions)
+
+    # 2. Display Live Instantiated PortfolioRiskLimits using Styled Neon Metric Cards
+    st.markdown("### 🛡️ Live Risk Engine Barrier Parameters (`PortfolioRiskLimits`)")
+    st.markdown("""
+    <div style="font-size: 0.85em; color: #00f0ff; margin-bottom: 15px; letter-spacing: 0.5px; text-shadow: 0 0 5px rgba(0, 240, 255, 0.4);">
+        ⚡ DIRECT TELEMETRY FROM INSTANTIATED RISK LIMITS ENFORCED BY THE EXECUTION GATEWAY
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Max Positions", limits.max_positions)
+    with col2:
+        st.metric("Max Exposure", f"{limits.max_exposure_pct * 100:.1f}%")
+    with col3:
+        st.metric("Daily Loss Barrier", f"{limits.daily_loss_limit_pct * 100:.1f}%")
+    with col4:
+        st.metric("Max Drawdown Halt", f"{limits.max_drawdown_halt_pct:.1f}%")
+
+    col5, col6, col7, col8 = st.columns(4)
+    with col5:
+        st.metric("Loss Streak Limit", f"{limits.loss_streak_threshold} losses")
+    with col6:
+        st.metric("Cooldown Duration", f"{limits.cooldown_bars} bars")
+    with col7:
+        st.metric("Active Loss Streak", limits.loss_streak)
+    with col8:
+        st.metric("24h Rolling Loss", f"${limits.daily_loss:,.2f}")
+
+    # 3. Global Safety & Config Table
+    st.markdown("### Global Safety & Risk Configuration")
     
     risk_data = [
         {"Parameter": "PAPER_TRADING", "Value": str(getattr(config, "PAPER_TRADING", "Unavailable"))},
@@ -38,20 +99,20 @@ def render_system_config_tab():
         from app.learning.paper_evolution_repository import PaperEvolutionRepository
         from app.learning.paper_evolution_models import LessonState
         
-        repo = PaperEvolutionRepository()
+        repo_evo = PaperEvolutionRepository()
         
         # 1. From lessons
-        for l in repo.get_lessons():
+        for l in repo_evo.get_lessons():
             if getattr(l, 'confidence_status', '') in ("VALIDATED", LessonState.VALIDATED) and getattr(l, 'strategy', 'UNKNOWN') != "UNKNOWN":
                 verified_strats.add(l.strategy)
                 
         # 2. From proposals
-        for p in repo.get_proposals():
+        for p in repo_evo.get_proposals():
             if p.affected_parameter and p.affected_parameter.endswith("_MIN_SCORE"):
                 strat = p.affected_parameter.replace("_MIN_SCORE", "")
                 verified_strats.add(strat)
                 
-    except Exception as e:
+    except Exception:
         pass # Ignore DB errors, continue with base strats and config
         
     # 3. From os.environ (in case injected via .env)

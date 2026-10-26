@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 class MarketBar(BaseModel):
     """Represents a single OHLCV market bar."""
@@ -80,6 +80,21 @@ class TradingSignal(BaseModel):
         if v not in ("LONG", "SHORT"):
             raise ValueError("Direction must be 'LONG' or 'SHORT'")
         return v
+        
+    @model_validator(mode="after")
+    def validate_sl_tp(self):
+        if self.entry_price is not None:
+            if self.direction == "LONG":
+                if self.stop_loss is not None and self.stop_loss >= self.entry_price:
+                    raise ValueError("LONG: stop_loss must be < entry_price")
+                if self.take_profit is not None and self.take_profit <= self.entry_price:
+                    raise ValueError("LONG: take_profit must be > entry_price")
+            elif self.direction == "SHORT":
+                if self.stop_loss is not None and self.stop_loss <= self.entry_price:
+                    raise ValueError("SHORT: stop_loss must be > entry_price")
+                if self.take_profit is not None and self.take_profit >= self.entry_price:
+                    raise ValueError("SHORT: take_profit must be < entry_price")
+        return self
 
 class RiskDecision(BaseModel):
     """The outcome of a risk evaluation for a pending trade."""

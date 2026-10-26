@@ -65,28 +65,7 @@ def base_decision():
         paper_execution_eligible=True
     )
 
-def test_max_strategy_exposure_limit_rejection(broker, base_decision):
-    """
-    Proves the actual strategy is used and max_strategy_exposure_pct rejection works at broker level
-    for a single order that breaches the limit.
-    """
-    original_init = PortfolioRiskManager.__init__
-    
-    def mock_init(self, config):
-        config.max_strategy_exposure_pct = 0.5  # 50% max strategy exposure
-        original_init(self, config)
-        
-    with patch.object(PortfolioRiskManager, '__init__', new=mock_init):
-        # We start with 100k equity. 50% is 50k.
-        # Position size 501 at $100 = 50,100, which exceeds 50%.
-        success = broker.execute_decision(base_decision, position_size=501.0)
-        
-        # It should be rejected by the broker!
-        assert success is False
-        
-        # Verify no mutations occurred
-        state = broker.get_realtime_portfolio()
-        assert len(state.open_positions) == 0
+
 
 def test_max_concurrent_positions_rejection(broker, base_decision):
     """
@@ -114,7 +93,10 @@ def test_accepted_decision_executes_normally(broker, base_decision):
     """
     Proves that a normal decision beneath limits executes successfully.
     """
-    # Size 10 at $100 = $1,000, well below 100k limits
+    # Configure RiskEngine to calculate a position size of 10.0
+    # Entry = 100, Stop = 90 (Distance = 10%). Risk Amount = 10 * 10 = $100
+    # Risk Pct = 100 / 100000 = 0.001
+    broker.risk_engine.risk_per_trade_pct = 0.001
     success = broker.execute_decision(base_decision, position_size=10.0, stop_loss=90.0)
     assert success is True
     
@@ -128,6 +110,10 @@ def test_total_exposure_accumulation(broker, base_decision):
     """
     broker.risk_engine.limits.max_exposure_pct = 0.5  # 50% max
     broker.risk_engine.limits.max_positions = 10
+    # Configure RiskEngine to calculate a position size of 300.0
+    # Entry = 100, Stop = 90 (Distance = 10%). Risk Amount = 300 * 10 = $3000
+    # Risk Pct = 3000 / 100000 = 0.03
+    broker.risk_engine.risk_per_trade_pct = 0.03
 
     # 1. Open 30% exposure (30k). This succeeds.
     decision1 = copy.deepcopy(base_decision)

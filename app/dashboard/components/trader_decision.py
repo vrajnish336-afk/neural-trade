@@ -106,8 +106,10 @@ def render_trader_decision_tab():
                             from app.execution.streaming_paper_broker import StreamingPaperBroker
                             from app.backtesting.models import CostConfig
                             
-                            # Instantiate broker just for the exit action (RiskEngine is mocked minimally as it's not strictly evaluating a new signal here)
-                            limits = PortfolioRiskLimits(initial_equity=10000.0)
+                            # Instantiate broker just for the exit action
+                            port_dict = dict(portfolio) if portfolio else {}
+                            initial_eq = port_dict.get('initial_equity', port_dict.get('current_equity', 10000.0))
+                            limits = PortfolioRiskLimits(initial_equity=initial_eq)
                             limits.rehydrate_from_paper_ledger(closed_positions)
                             risk_engine = RiskEngine(limits, risk_per_trade_pct=0.01)
                             broker = StreamingPaperBroker(repo, risk_engine, CostConfig(), "default_paper")
@@ -224,7 +226,14 @@ def render_trader_decision_tab():
                 strategy = BreakoutStrategy()
                 ensemble = StrategyEnsemble([strategy])
                 
-                limits = PortfolioRiskLimits(initial_equity=10000.0)
+                # Dynamically query live portfolio state from repository
+                portfolio = repo.get_or_create_portfolio("default_paper")
+                positions = repo.get_open_positions("default_paper")
+                closed_positions = repo.get_closed_positions("default_paper", limit=1000)
+
+                port_dict = dict(portfolio) if portfolio else {}
+                initial_eq = port_dict.get('initial_equity', port_dict.get('current_equity', 10000.0))
+                limits = PortfolioRiskLimits(initial_equity=initial_eq)
                 limits.rehydrate_from_paper_ledger(closed_positions)
                 risk_engine = RiskEngine(limits, risk_per_trade_pct=0.01)
                 
@@ -236,30 +245,54 @@ def render_trader_decision_tab():
                 from app.decision.weighting import StrategyWeightingService
                 weighting_service = StrategyWeightingService()
                 
+                paper_repo = getattr(st.session_state, "paper_db", repo)
+                evolution_db = getattr(st.session_state, "evolution_db", None)
+
                 orchestrator = DecisionOrchestrator(
                     ensemble=ensemble,
                     risk_engine=risk_engine,
                     intelligence_service=intelligence_service,
                     forecasting_service=forecasting_service,
-                    paper_repository=st.session_state.paper_db,
+                    paper_repository=paper_repo,
                     drawdown_service=DrawdownService(),
-                    weighting_service=StrategyWeightingService(st.session_state.evolution_db),
+                    weighting_service=StrategyWeightingService(evolution_db),
                     data_provider=provider
                 )
                 
-                # We limit bars to 100 for evaluation speed
-                eval_bars = bars[:100] if bars else []
+                # Evaluate the most recent market conditions (latest 100 bars)
+                eval_bars = bars[-100:] if bars else []
                 
                 # Calculate real risk state from PaperRepository
                 current_exposure = sum(p['entry_price'] * p['quantity'] for p in positions)
                 
-                decision: TraderDecision = orchestrator.evaluate(
-                    symbol=symbol,
-                    bars=eval_bars,
-                    current_equity=portfolio['current_equity'],
-                    current_positions_count=len(positions),
-                    current_exposure=current_exposure
-                )
+                # Real-time Neon visual data flow
+                with st.status("⚡ QUANT ENGINE ACTIVE: Evaluating Live Market Signals...", expanded=True) as status:
+                    st.write(f"📡 Ingesting market bars for **{symbol}** (processing latest {len(eval_bars)} bars)...")
+                    st.write("🧠 Synthesizing ensemble strategy signals & multi-timeframe alignment...")
+                    st.write("🛡️ Evaluating PortfolioRiskLimits & drawdown barriers...")
+                    
+                    decision: TraderDecision = orchestrator.evaluate(
+                        symbol=symbol,
+                        bars=eval_bars,
+                        current_equity=portfolio['current_equity'],
+                        current_positions_count=len(positions),
+                        current_exposure=current_exposure,
+                        portfolio_id="default_paper"
+                    )
+                    
+                    try:
+                        status.update(
+                            label=f"✅ QUANT EVALUATION COMPLETE: {decision.decision} ({'APPROVED' if decision.risk_gate_approved else 'BLOCKED'})",
+                            state="complete",
+                            expanded=False
+                        )
+                    except Exception:
+                        pass
+                
+                try:
+                    st.toast(f"⚡ Evaluation Complete: {decision.symbol} -> {decision.decision}", icon="🚀")
+                except Exception:
+                    pass
                 
                 # Render Results
                 st.markdown("### Decision Output")

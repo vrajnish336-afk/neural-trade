@@ -26,7 +26,7 @@ class PaperRepository:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def get_or_create_portfolio(self, portfolio_id: str, initial_equity: float = 10000.0) -> sqlite3.Row:
+    def get_or_create_portfolio(self, portfolio_id: str, initial_equity: float = 10000.0, as_of: Optional[datetime] = None) -> sqlite3.Row:
         from contextlib import closing
         with closing(self._get_conn()) as conn:
             with conn:
@@ -36,7 +36,7 @@ class PaperRepository:
                 if row:
                     return row
                     
-                now = datetime.now(timezone.utc).isoformat()
+                now = as_of.isoformat() if as_of else datetime.now(timezone.utc).isoformat()
                 cursor.execute(
                     """
                     INSERT INTO paper_portfolios (portfolio_id, initial_equity, current_equity, current_cash, created_at, updated_at)
@@ -64,6 +64,55 @@ class PaperRepository:
                 cursor = conn.cursor()
                 cursor.execute("SELECT * FROM paper_positions WHERE portfolio_id = ?", (portfolio_id,))
                 return cursor.fetchall()
+
+    def calculate_unrealized_pnl(self, portfolio_id: str, current_prices: Optional[Dict[str, float]] = None) -> float:
+        """
+        Calculates the combined unrealized PnL of all currently open positions for the portfolio.
+        Uses current_prices[symbol] if provided, else defaults to pos['entry_price'] (0 PnL).
+        """
+        positions = self.get_open_positions(portfolio_id)
+        if not positions:
+            return 0.0
+            
+        prices = current_prices or {}
+        total_unrealized = 0.0
+        for pos in positions:
+            sym = pos['symbol']
+            curr_price = prices.get(sym)
+            if curr_price is not None and curr_price > 0:
+                direction = pos['direction']
+                qty = float(pos['quantity'])
+                entry = float(pos['entry_price'])
+                if direction == 'LONG':
+                    total_unrealized += (curr_price - entry) * qty
+                elif direction == 'SHORT':
+                    total_unrealized += (entry - curr_price) * qty
+        return total_unrealized
+
+    def get_dynamic_equity(self, portfolio_id: str, current_prices: Optional[Dict[str, float]] = None) -> float:
+        """
+        Calculates true dynamic equity: Realized Cash + Combined unrealized PnL of all open positions.
+        """
+        portfolio = self.get_or_create_portfolio(portfolio_id)
+        current_cash = float(portfolio['current_cash'])
+        unrealized = self.calculate_unrealized_pnl(portfolio_id, current_prices)
+        return current_cash + unrealized
+
+    def sync_dynamic_equity(self, portfolio_id: str, current_prices: Optional[Dict[str, float]] = None) -> float:
+        """
+        Updates paper_portfolios.current_equity with the true dynamic equity
+        (Realized Cash + Combined unrealized PnL) and returns it.
+        """
+        dynamic_equity = self.get_dynamic_equity(portfolio_id, current_prices)
+        now = datetime.now(timezone.utc).isoformat()
+        from contextlib import closing
+        with closing(self._get_conn()) as conn:
+            with conn:
+                conn.execute(
+                    "UPDATE paper_portfolios SET current_equity = ?, updated_at = ? WHERE portfolio_id = ?",
+                    (dynamic_equity, now, portfolio_id)
+                )
+        return dynamic_equity
                 
     def get_recent_orders(self, portfolio_id: str, limit: int = 5) -> List[sqlite3.Row]:
         from contextlib import closing
@@ -76,11 +125,21 @@ class PaperRepository:
                 )
                 return cursor.fetchall()
             
-    def generate_decision_id(self, symbol: str, timestamp: datetime) -> str:
+    def generate_decision_id(
+        self, 
+        symbol: str, 
+        timestamp: datetime, 
+        decision: Optional[str] = None, 
+        strategy_name: Optional[str] = None
+    ) -> str:
         """
         Creates a deterministic decision identity to prevent duplicate orders.
+        Includes decision (direction/action) and strategy_name in the hash payload
+        alongside symbol and timestamp to prevent cross-action/strategy collisions.
         """
-        raw = f"{symbol}_{timestamp.isoformat()}".encode('utf-8')
+        decision_str = str(decision or "").strip()
+        strategy_str = str(strategy_name or "").strip()
+        raw = f"{symbol}_{timestamp.isoformat()}_{decision_str}_{strategy_str}".encode('utf-8')
         return hashlib.sha256(raw).hexdigest()
 
     def execute_order(
@@ -187,14 +246,26 @@ class PaperRepository:
                     logger.error(f"Error executing order: {e}")
                     raise PaperRepositoryException(f"Failed to execute order: {e}")
 
-    def record_rejected_trade(self, portfolio_id: str, decision_id: str, symbol: str, direction: str, 
-                              reason: str, timestamp: datetime, strategy: Optional[str] = None, regime: Optional[str] = None):
+    def record_rejected_trade(
+        self, 
+        portfolio_id: str, 
+        decision_id: str, 
+        symbol: str, 
+        decision: Optional[str] = None, 
+        reason: str = "", 
+        timestamp: Optional[datetime] = None, 
+        strategy: Optional[str] = None, 
+        regime: Optional[str] = None,
+        direction: Optional[str] = None
+    ) -> None:
         """
-        Record a rejected or vetoed trade into paper_orders for analytics.
+        Record a rejected or vetoed trade into rejected_paper_orders table.
+        Separates rejected trades completely from paper_orders to eliminate decision_id collision.
         """
+        decision_val = decision if decision is not None else (direction or "UNKNOWN")
         now = datetime.now(timezone.utc).isoformat()
-        ts_str = timestamp.isoformat()
-        order_id = str(uuid.uuid4())
+        ts_str = timestamp.isoformat() if timestamp else now
+        rejection_id = str(uuid.uuid4())
         
         regime_val = regime if regime else "UNKNOWN"
         
@@ -204,17 +275,31 @@ class PaperRepository:
                 try:
                     conn.execute(
                         """
-                        INSERT INTO paper_orders (
-                            order_id, portfolio_id, decision_id, symbol, direction, 
-                            quantity, price, timestamp, status, commission, slippage, created_at, reason, regime, strategy
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO rejected_paper_orders (
+                            rejection_id, portfolio_id, decision_id, symbol, decision, 
+                            reason, timestamp, strategy, regime, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (order_id, portfolio_id, decision_id, symbol, direction, 0.0, 
-                         0.0, ts_str, "REJECTED", 0.0, 0.0, now, reason, regime_val, strategy)
+                        (rejection_id, portfolio_id, decision_id, symbol, decision_val, 
+                         reason, ts_str, strategy, regime_val, now)
                     )
                 except sqlite3.IntegrityError as e:
                     logger.warning(f"Failed to record rejected trade {decision_id}: {e}")
                     pass # Already recorded
+
+    def get_rejected_orders(self, portfolio_id: str, limit: int = 20) -> List[sqlite3.Row]:
+        """
+        Retrieves the read-only ledger of rejected orders for a portfolio, sorted by newest first.
+        """
+        from contextlib import closing
+        with closing(self._get_conn()) as conn:
+            with conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT * FROM rejected_paper_orders WHERE portfolio_id = ? ORDER BY created_at DESC LIMIT ?",
+                    (portfolio_id, limit)
+                )
+                return cursor.fetchall()
                     
     def execute_exit(
         self,

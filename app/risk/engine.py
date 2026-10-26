@@ -1,5 +1,6 @@
 import logging
 from typing import Optional, Tuple
+from datetime import datetime
 from app.core.models import RiskDecision, TradingSignal
 from app.risk.limits import PortfolioRiskLimits
 from app.risk.position_sizing import calculate_position_size_by_stop_distance
@@ -19,6 +20,10 @@ class RiskEngine:
         self.is_death_mode_active: bool = False
         self.death_mode_reason: Optional[str] = None
         
+    def rehydrate_limits(self, closed_positions: list, as_of: Optional[datetime] = None) -> None:
+        """Rehydrates the inner PortfolioRiskLimits state from paper closed positions."""
+        self.limits.rehydrate_from_paper_ledger(closed_positions, as_of=as_of)
+
     def manual_reset_death_mode(self) -> None:
         """Manually resets the latched Risk-Off Death Mode state."""
         self.is_death_mode_active = False
@@ -62,6 +67,12 @@ class RiskEngine:
             )
             
         # 1. Portfolio Limits (Cooldown, Max Positions, Daily Loss, Exposure)
+        if current_equity <= 0:
+            return RiskDecision(
+                approved=False, requested_risk=0.0, allowed_risk=0.0, position_size=0.0,
+                rejection_reason="Invalid or zero equity", relevant_limit="Equity"
+            )
+            
         limit_check, reason, limit_name = self.limits.can_open_new_position(
             current_positions_count, current_exposure, current_equity
         )
@@ -70,11 +81,11 @@ class RiskEngine:
         
         if not limit_check:
             # Try to map reason
-            if limit_name == "DAILY_LOSS_LIMIT":
+            if limit_name in ("DAILY_LOSS_LIMIT", "Daily Loss"):
                 reason_code = RejectionReason.DAILY_LOSS_LIMIT
-            elif limit_name == "MAX_CONCURRENT_POSITIONS":
+            elif limit_name in ("MAX_CONCURRENT_POSITIONS", "Max Positions"):
                 reason_code = RejectionReason.POSITION_LIMIT
-            elif limit_name == "COOLDOWN":
+            elif limit_name in ("COOLDOWN", "Cooldown"):
                 reason_code = RejectionReason.LOSS_STREAK_COOLDOWN
             else:
                 reason_code = RejectionReason.RISK_LIMIT

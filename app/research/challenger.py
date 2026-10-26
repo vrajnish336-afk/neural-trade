@@ -1,18 +1,48 @@
 import uuid
 import sqlite3
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 from app.config import config
 from app.research.models import ResearchExperiment, ChampionChallengerResult
 from app.research.registry import ExperimentRegistry
 
 class ChampionChallengerValidator:
-    def __init__(self):
+    def __init__(self, db_path: Optional[str] = None, require_persisted_evidence: bool = False):
         self.registry = ExperimentRegistry()
-        self.db_path = config.DB_PATH
+        self.db_path = db_path or config.DB_PATH
+        self.require_persisted_evidence = require_persisted_evidence
 
     def _get_conn(self):
         return sqlite3.connect(self.db_path)
+
+    @staticmethod
+    def _extract_fold_metrics(fold) -> Tuple[int, float]:
+        for attr in ["validation_report", "test_report"]:
+            report = getattr(fold, attr, None)
+            if report and getattr(report, "trade_metrics", None):
+                tm = report.trade_metrics
+                t = getattr(tm, "total_trades", 0)
+                pf = getattr(tm, "profit_factor", 0.0)
+                if t > 0:
+                    return t, pf
+        trades = getattr(fold, "trades", None)
+        if trades is None:
+            trades = getattr(fold, "total_trades", None)
+        pf = getattr(fold, "profit_factor", None)
+        if pf is None:
+            pf = getattr(fold, "pf", None)
+        if trades is not None:
+            if pf is None:
+                gp = getattr(fold, "gross_profit", 0.0) if hasattr(fold, "gross_profit") else (fold.get("gross_profit", 0.0) if isinstance(fold, dict) else 0.0)
+                pf = float('inf') if gp > 0 else 0.0
+            return trades, pf
+        if isinstance(fold, dict):
+            trades = fold.get("trades", fold.get("total_trades", 0))
+            pf = fold.get("profit_factor", fold.get("pf", None))
+            if pf is None:
+                pf = float('inf') if fold.get("gross_profit", 0.0) > 0 else 0.0
+            return trades, pf
+        return 0, 0.0
 
     def evaluate(self, champion: ResearchExperiment, challenger: ResearchExperiment) -> ChampionChallengerResult:
         """
@@ -78,12 +108,64 @@ class ChampionChallengerValidator:
         chall_max_deg = max([s.degradation_pct for s in chall_stress.values()]) if chall_stress else 0
         scorecard["max_stress_degradation"] = {"champ": champ_max_deg, "chall": chall_max_deg}
 
-        # 4. DECISION RULES (Anti-overfitting + Robustness boundaries)
+        # 4. WALK-FORWARD FOLD CONSISTENCY & SEVERE LOSS REJECTION
+        chall_folds = getattr(challenger, "walk_forward_results", [])
+        chall_artifact = getattr(challenger, "walk_forward_artifact", None)
+        if not chall_folds and chall_artifact:
+            chall_folds = getattr(chall_artifact, "folds", [])
+        has_fold_evidence = bool(chall_folds)
+        has_severe_loss = False
+        severe_loss_details = []
+
+        if not has_fold_evidence:
+            reasons.append("Missing Walk-Forward Fold Evidence")
+        else:
+            for fold in chall_folds:
+                trades, pf = self._extract_fold_metrics(fold)
+                if trades > 0 and pf < 0.5:
+                    has_severe_loss = True
+                    severe_loss_details.append(f"PF={pf:.2f} ({trades} trades)")
+
+            if has_severe_loss:
+                reasons.append(f"Severe Loss in Validation Fold (PF < 0.5: {', '.join(severe_loss_details)})")
+
+        scorecard["has_fold_evidence"] = has_fold_evidence
+        scorecard["has_severe_loss"] = has_severe_loss
+
+        # 4b. EVIDENCE PERSISTENCE INTEGRITY & RECONCILIATION
+        persistence_failed = getattr(challenger, "persistence_failed", False)
+        
+        if chall_artifact:
+            from app.research.robustness.artifact import verify_artifact_reconciliation
+            is_rec, rec_issues = verify_artifact_reconciliation(chall_artifact)
+            if not is_rec or not getattr(chall_artifact, "reconciled", True):
+                persistence_failed = True
+                reasons.append("Walk-Forward Evidence Reconciliation Mismatch")
+
+        artifact_id = getattr(challenger, "artifact_id", None)
+        strict_persistence = getattr(self, "require_persisted_evidence", False) or getattr(challenger, "require_persisted_evidence", False)
+        if artifact_id or (strict_persistence and chall_artifact):
+            target_id = artifact_id or getattr(chall_artifact, "artifact_id", None)
+            from app.research.robustness.artifact import load_evidence_artifact
+            loaded_art = load_evidence_artifact(target_id, self.db_path) if target_id else None
+            if loaded_art is None:
+                persistence_failed = True
+                reasons.append(f"Walk-Forward Evidence Persistence Record Missing for {target_id}")
+
+        if persistence_failed:
+            reasons.append("Walk-Forward Evidence Persistence Failed")
+
+        scorecard["persistence_failed"] = persistence_failed
+
+        # 5. DECISION RULES (Anti-overfitting + Robustness boundaries)
         # Criteria for Promotion:
         # A. Must beat return
         # B. Must not increase drawdown unacceptably (>20% worse)
         # C. Must have acceptable sample size
         # D. Must not have severe degradation under stress (>50% worse than champion's degradation)
+        # E. Must have walk-forward fold evidence (cannot produce PROMOTE without folds)
+        # F. Must not have severe loss in any non-empty validation fold (PF < 0.5)
+        # G. Must not have missing or failed evidence persistence
         
         ret_improved = chall_oos.equity_metrics.total_return_pct > champ_oos.equity_metrics.total_return_pct
         dd_degraded = chall_oos.equity_metrics.max_drawdown_pct > (champ_oos.equity_metrics.max_drawdown_pct * 1.2)
@@ -104,7 +186,13 @@ class ChampionChallengerValidator:
         if not stress_acceptable:
             reasons.append("Severe Stress Degradation")
 
-        if ret_improved and not dd_degraded and trades_sufficient and stress_acceptable:
+        if has_severe_loss:
+            decision = "REJECT"
+        elif not has_fold_evidence:
+            decision = "INCONCLUSIVE"
+        elif persistence_failed:
+            decision = "INCONCLUSIVE"
+        elif ret_improved and not dd_degraded and trades_sufficient and stress_acceptable:
             decision = "PROMOTE"
         elif not trades_sufficient:
             decision = "INCONCLUSIVE"

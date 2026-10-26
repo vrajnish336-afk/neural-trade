@@ -208,3 +208,98 @@ def test_execute_exit_wrong_symbol(broker, base_decision):
     exit_ts = base_decision.timestamp + timedelta(hours=1)
     success = broker.execute_exit("random_id", 110.0, exit_ts)
     assert success is False
+
+
+def test_1_to_3_risk_reward_take_profit_calculation(broker, base_decision):
+    base_decision.decision = "LONG"
+    base_decision.evaluated_price = 100.0
+    # Entry = 100, SL = 90 -> Risk = 10 -> 1:3 TP = 100 + 3*10 = 130
+    success = broker.execute_decision(base_decision, position_size=1.0, stop_loss=90.0, take_profit=None)
+    assert success is True
+    
+    positions = broker.repo.get_open_positions(broker.portfolio_id)
+    assert len(positions) == 1
+    assert positions[0]['stop_loss'] == 90.0
+    assert positions[0]['take_profit'] == 130.0
+
+def test_runtime_monitor_positions_sl_hit(broker, base_decision):
+    from app.core.models import MarketBar
+    from datetime import timedelta
+    base_decision.decision = "LONG"
+    base_decision.evaluated_price = 100.0
+    broker.execute_decision(base_decision, position_size=1.0, stop_loss=90.0)
+    
+    # Bar touches SL (low = 88 <= 90)
+    bar = MarketBar(
+        symbol="BTC/USD",
+        timestamp=base_decision.timestamp + timedelta(hours=1),
+        open=95.0, high=96.0, low=88.0, close=89.0, volume=100.0
+    )
+    exits = broker.monitor_positions(bar)
+    assert len(exits) == 1
+    assert exits[0]['reason'] == "SL_HIT"
+    
+    closed = broker.repo.get_closed_positions(broker.portfolio_id)
+    assert len(closed) == 1
+    assert closed[0]['exit_reason'] == "SL_HIT"
+    assert len(broker.get_realtime_portfolio().open_positions) == 0
+
+def test_runtime_monitor_positions_tp_hit(broker, base_decision):
+    from app.core.models import MarketBar
+    from datetime import timedelta
+    base_decision.decision = "LONG"
+    base_decision.evaluated_price = 100.0
+    broker.execute_decision(base_decision, position_size=1.0, stop_loss=90.0)
+    
+    # Bar touches TP (high = 135 >= 130)
+    bar = MarketBar(
+        symbol="BTC/USD",
+        timestamp=base_decision.timestamp + timedelta(hours=1),
+        open=120.0, high=135.0, low=118.0, close=132.0, volume=100.0
+    )
+    exits = broker.monitor_positions(bar)
+    assert len(exits) == 1
+    assert exits[0]['reason'] == "TP_HIT"
+    
+    closed = broker.repo.get_closed_positions(broker.portfolio_id)
+    assert len(closed) == 1
+    assert closed[0]['exit_reason'] == "TP_HIT"
+    assert len(broker.get_realtime_portfolio().open_positions) == 0
+
+def test_signal_reversal_exits_with_signal_reversal_reason(broker, base_decision):
+    from datetime import timedelta
+    # 1. Open LONG
+    base_decision.decision = "LONG"
+    base_decision.evaluated_price = 100.0
+    success = broker.execute_decision(base_decision, position_size=1.0, stop_loss=90.0)
+    assert success is True
+    
+    # 2. Opposite SHORT decision arrives
+    rev_decision = TraderDecision(
+        symbol="BTC/USD",
+        timestamp=base_decision.timestamp + timedelta(hours=2),
+        data_freshness="FRESH",
+        regime="TRENDING_DOWN",
+        trend_context="TRENDING_DOWN",
+        volatility_context="NORMAL",
+        multi_timeframe_alignment="UNKNOWN",
+        strategy_signals=[{"strategy": "Reverse", "direction": "SHORT"}],
+        forecast_direction="DOWN",
+        forecast_uncertainty=0.5,
+        world_context="NEGATIVE",
+        scenario_analysis=base_decision.scenario_analysis,
+        main_risks=[],
+        invalidation_conditions=[],
+        rationale="Signal Reversal Test",
+        confidence=0.9,
+        decision="SHORT",
+        evaluated_price=98.0,
+        risk_gate_approved=True,
+        paper_execution_eligible=True
+    )
+    success_rev = broker.execute_decision(rev_decision, position_size=1.0, stop_loss=108.0)
+    assert success_rev is True
+    
+    closed = broker.repo.get_closed_positions(broker.portfolio_id)
+    assert len(closed) >= 1
+    assert closed[0]['exit_reason'] == "SIGNAL_REVERSAL"
