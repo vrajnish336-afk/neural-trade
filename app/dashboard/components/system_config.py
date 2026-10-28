@@ -4,6 +4,7 @@ from app.config import config
 from app.learning.paper_evolution_engine import SAFE_PARAMETERS
 from app.risk.limits import PortfolioRiskLimits
 from app.execution.paper_repository import PaperRepository
+from app.dashboard.components.death_mode_banner import render_death_mode_banner
 
 def render_system_config_tab():
     st.markdown("## SYSTEM CONFIGURATION & HEALTH")
@@ -13,10 +14,12 @@ def render_system_config_tab():
     try:
         repo = PaperRepository()
         portfolio = repo.get_or_create_portfolio("default_paper")
-        initial_equity = float(portfolio['initial_equity']) if portfolio else 10000.0
+        initial_equity = float(portfolio['initial_equity']) if portfolio and 'initial_equity' in portfolio.keys() else 10000.0
+        current_equity = float(portfolio['current_equity']) if portfolio and 'current_equity' in portfolio.keys() else initial_equity
         closed_positions = repo.get_closed_positions("default_paper", limit=1000)
     except Exception:
         initial_equity = 10000.0
+        current_equity = 10000.0
         closed_positions = []
 
     # Runtime parameters
@@ -26,6 +29,7 @@ def render_system_config_tab():
     streak_thresh = int(getattr(config, "LOSS_STREAK_THRESHOLD", 3)) if hasattr(config, "LOSS_STREAK_THRESHOLD") else 3
     cooldown = int(getattr(config, "COOLDOWN_BARS", 5)) if hasattr(config, "COOLDOWN_BARS") else 5
     dd_halt = float(getattr(config, "MAX_DRAWDOWN_HALT_PCT", 20.0)) if hasattr(config, "MAX_DRAWDOWN_HALT_PCT") else 20.0
+    survival_pct = float(getattr(config, "SURVIVAL_BUDGET_PCT", 0.50)) if hasattr(config, "SURVIVAL_BUDGET_PCT") else 0.50
 
     limits = PortfolioRiskLimits(
         initial_equity=initial_equity,
@@ -34,10 +38,18 @@ def render_system_config_tab():
         daily_loss_limit_pct=daily_limit,
         loss_streak_threshold=streak_thresh,
         cooldown_bars=cooldown,
-        max_drawdown_halt_pct=dd_halt
+        max_drawdown_halt_pct=dd_halt,
+        survival_budget_pct=survival_pct
     )
     if closed_positions:
         limits.rehydrate_from_paper_ledger(closed_positions)
+
+    # Prominent Blinking Neon Banner if Death Mode Active or Near Threshold
+    render_death_mode_banner(
+        current_equity=current_equity,
+        initial_equity=initial_equity,
+        survival_budget_pct=survival_pct
+    )
 
     # 2. Display Live Instantiated PortfolioRiskLimits using Styled Neon Metric Cards
     st.markdown("### 🛡️ Live Risk Engine Barrier Parameters (`PortfolioRiskLimits`)")
@@ -78,7 +90,8 @@ def render_system_config_tab():
         {"Parameter": "RISK_PER_TRADE", "Value": str(getattr(config, "RISK_PER_TRADE", "Unavailable"))},
         {"Parameter": "DAILY_LOSS_LIMIT", "Value": str(getattr(config, "DAILY_LOSS_LIMIT", "Unavailable"))},
         {"Parameter": "LOSS_STREAK_THRESHOLD", "Value": str(getattr(config, "LOSS_STREAK_THRESHOLD", "Unavailable"))},
-        {"Parameter": "MAX_POSITIONS", "Value": str(getattr(config, "MAX_POSITIONS", "Unavailable"))}
+        {"Parameter": "MAX_POSITIONS", "Value": str(getattr(config, "MAX_POSITIONS", "Unavailable"))},
+        {"Parameter": "SURVIVAL_BUDGET_PCT", "Value": str(getattr(config, "SURVIVAL_BUDGET_PCT", "Unavailable"))}
     ]
     
     st.table(pd.DataFrame(risk_data))

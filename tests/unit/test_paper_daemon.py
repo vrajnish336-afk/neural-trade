@@ -301,3 +301,43 @@ def test_daemon_rotating_logging():
             for handler in test_logger.handlers[:]:
                 handler.close()
                 test_logger.removeHandler(handler)
+
+
+def test_daemon_death_mode_survival_budget_halt(temp_db, mock_data_provider, caplog):
+    """
+    Verifies Phase 67 — Death Mode (Survival Budget) enforcement in the daemon:
+    When dynamic equity drops below 50% survival budget, the daemon sets death_mode_active=True,
+    logs 'SYSTEM DEAD: SURVIVAL BUDGET BREACHED', and immediately halts execution (self.stop()).
+    """
+    import logging
+    caplog.set_level(logging.CRITICAL)
+
+    daemon = PaperTradingDaemon(
+        symbols=["BTC/USDT"],
+        db_path=temp_db,
+        data_provider=mock_data_provider,
+        portfolio_id="test_death_mode_portfolio",
+        initial_equity=10000.0,
+        poll_interval=0.01,
+        backoff_seconds=0.01
+    )
+    daemon.setup()
+
+    # Artificially breach the survival budget in the database (current equity $4500 <= $5000 threshold)
+    with sqlite3.connect(temp_db) as conn:
+        conn.execute(
+            "UPDATE paper_portfolios SET current_equity = 4500.0, current_cash = 4500.0 WHERE portfolio_id = 'test_death_mode_portfolio'"
+        )
+        conn.commit()
+
+    # Run the daemon
+    daemon.start(max_iterations=5)
+
+    # Verify daemon stopped itself
+    assert daemon._running is False
+    assert daemon.risk_engine.death_mode_active is True
+
+    # Verify critical log message was emitted
+    critical_records = [rec for rec in caplog.records if rec.levelno == logging.CRITICAL]
+    assert any("SYSTEM DEAD: SURVIVAL BUDGET BREACHED" in rec.getMessage() for rec in critical_records)
+

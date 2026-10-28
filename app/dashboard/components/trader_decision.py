@@ -15,6 +15,7 @@ from app.data.csv_provider import CsvHistoricalDataProvider
 
 from app.execution.paper_repository import PaperRepository
 from app.risk.drawdown import DrawdownService, DrawdownStatus
+from app.dashboard.components.death_mode_banner import render_death_mode_banner
 import pandas as pd
 
 def render_trader_decision_tab():
@@ -28,6 +29,18 @@ def render_trader_decision_tab():
         portfolio = repo.get_or_create_portfolio("default_paper")
         positions = repo.get_open_positions("default_paper")
         orders = repo.get_recent_orders("default_paper", limit=5)
+
+        port_dict = dict(portfolio) if portfolio else {}
+        initial_eq = float(port_dict.get('initial_equity', port_dict.get('current_equity', 10000.0)))
+        current_eq = float(port_dict.get('current_equity', 10000.0))
+        survival_pct = float(getattr(config, "SURVIVAL_BUDGET_PCT", 0.50)) if hasattr(config, "SURVIVAL_BUDGET_PCT") else 0.50
+
+        # Prominent Blinking Neon Banner if Death Mode Active or Near Threshold
+        render_death_mode_banner(
+            current_equity=current_eq,
+            initial_equity=initial_eq,
+            survival_budget_pct=survival_pct
+        )
         
         col_eq, col_cash, col_pos = st.columns(3)
         col_eq.metric("Current Equity", f"${portfolio['current_equity']:.2f}")
@@ -109,7 +122,7 @@ def render_trader_decision_tab():
                             # Instantiate broker just for the exit action
                             port_dict = dict(portfolio) if portfolio else {}
                             initial_eq = port_dict.get('initial_equity', port_dict.get('current_equity', 10000.0))
-                            limits = PortfolioRiskLimits(initial_equity=initial_eq)
+                            limits = PortfolioRiskLimits(initial_equity=initial_eq, survival_budget_pct=float(getattr(config, "SURVIVAL_BUDGET_PCT", 0.50)))
                             limits.rehydrate_from_paper_ledger(closed_positions)
                             risk_engine = RiskEngine(limits, risk_per_trade_pct=0.01)
                             broker = StreamingPaperBroker(repo, risk_engine, CostConfig(), "default_paper")
@@ -233,7 +246,7 @@ def render_trader_decision_tab():
 
                 port_dict = dict(portfolio) if portfolio else {}
                 initial_eq = port_dict.get('initial_equity', port_dict.get('current_equity', 10000.0))
-                limits = PortfolioRiskLimits(initial_equity=initial_eq)
+                limits = PortfolioRiskLimits(initial_equity=initial_eq, survival_budget_pct=float(getattr(config, "SURVIVAL_BUDGET_PCT", 0.50)))
                 limits.rehydrate_from_paper_ledger(closed_positions)
                 risk_engine = RiskEngine(limits, risk_per_trade_pct=0.01)
                 

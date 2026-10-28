@@ -282,7 +282,8 @@ class PaperTradingDaemon:
             daily_loss_limit_pct=0.05,
             loss_streak_threshold=3,
             cooldown_bars=5,
-            max_drawdown_halt_pct=20.0
+            max_drawdown_halt_pct=20.0,
+            survival_budget_pct=float(getattr(config, "SURVIVAL_BUDGET_PCT", 0.50))
         )
         closed_trades = self.paper_repo.get_closed_positions(self.portfolio_id, limit=100)
         self.risk_limits.rehydrate_from_paper_ledger(closed_trades)
@@ -404,6 +405,22 @@ class PaperTradingDaemon:
 
             portfolio_row = self.paper_repo.get_or_create_portfolio(self.portfolio_id)
             current_equity = float(portfolio_row['current_equity'])
+
+            # Phase 67 — Death Mode (Survival Budget) Halt Check
+            if self.risk_limits.is_survival_budget_breached(current_equity):
+                self.risk_engine.death_mode_active = True
+                self.risk_engine.death_mode_reason = "Survival budget breached."
+
+            if getattr(self.risk_engine, "death_mode_active", False):
+                logger.critical("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                logger.critical("SYSTEM DEAD: SURVIVAL BUDGET BREACHED")
+                logger.critical(
+                    "Dynamic equity $%.2f breached survival threshold $%.2f. Permanently halting trading daemon.",
+                    current_equity, getattr(self.risk_limits, "survival_budget_threshold", 0.0)
+                )
+                logger.critical("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                self.stop()
+                break
 
             existing_pos = next((p for p in state.open_positions if p['symbol'] == symbol), None)
 
@@ -556,6 +573,16 @@ class PaperTradingDaemon:
 
                 try:
                     self.run_iteration()
+
+                    # Phase 67 — Death Mode (Survival Budget) Loop Check
+                    if getattr(self.risk_engine, "death_mode_active", False):
+                        logger.critical("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                        logger.critical("SYSTEM DEAD: SURVIVAL BUDGET BREACHED")
+                        logger.critical("Halting paper daemon process immediately.")
+                        logger.critical("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                        self.stop()
+                        break
+
                     # Reset error counters on successful cycle
                     consecutive_errors = 0
                     current_backoff = self.backoff_seconds

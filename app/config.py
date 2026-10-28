@@ -37,6 +37,7 @@ class Config:
         self.DAILY_LOSS_LIMIT: float = float(os.getenv("DAILY_LOSS_LIMIT", "0.05")) # 5% max daily loss
         self.LOSS_STREAK_THRESHOLD: int = int(os.getenv("LOSS_STREAK_THRESHOLD", "3"))
         self.COOLDOWN_BARS: int = int(os.getenv("COOLDOWN_BARS", "5"))
+        self.SURVIVAL_BUDGET_PCT: float = float(os.getenv("SURVIVAL_BUDGET_PCT", "0.50")) # 50% max allowable loss before Death Mode
         self.DEATH_MODE_ENABLED: bool = os.getenv("DEATH_MODE_ENABLED", "false").lower() in ("true", "1", "yes")
         self.DEATH_MODE_DRAWDOWN_LIMIT: float = float(os.getenv("DEATH_MODE_DRAWDOWN_LIMIT", "0.10"))
         self.DEATH_MODE_LOSS_STREAK: int = int(os.getenv("DEATH_MODE_LOSS_STREAK", "5"))

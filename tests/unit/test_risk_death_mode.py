@@ -9,6 +9,7 @@ from app.config import config
 @pytest.fixture
 def risk_engine():
     limits = MagicMock(spec=PortfolioRiskLimits)
+    limits.is_survival_budget_breached.return_value = False
     limits.can_open_new_position.return_value = (True, "OK", "NONE")
     return RiskEngine(limits=limits)
 
@@ -72,3 +73,79 @@ def test_existing_position_exits_unaffected(risk_engine):
     # Confirm Death Mode latched state does not alter risk limits instance or raise errors
     risk_engine.is_death_mode_active = True
     assert risk_engine.limits.can_open_new_position.called is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 67 — Death Mode (Survival Budget) Tests
+# ---------------------------------------------------------------------------
+
+def test_survival_budget_limits_property_and_check():
+    limits = PortfolioRiskLimits(initial_equity=10000.0, survival_budget_pct=0.50)
+    assert limits.survival_budget_pct == 0.50
+    assert limits.survival_budget_threshold == 5000.0
+    assert limits.survival_threshold == 5000.0
+    
+    # Healthy equity: above survival budget
+    assert limits.is_survival_budget_breached(10000.0) is False
+    assert limits.is_survival_budget_breached(5001.0) is False
+    assert limits.check_survival_budget(5001.0) is False
+
+    # Breached equity: at or below 50%
+    assert limits.is_survival_budget_breached(5000.0) is True
+    assert limits.is_survival_budget_breached(4999.0) is True
+    assert limits.check_survival_budget(4999.0) is True
+    assert limits.is_survival_budget_breached(0.0) is True
+
+    # can_open_new_position rejects if survival budget breached
+    can_open, reason, limit_name = limits.can_open_new_position(0, 0.0, 4500.0)
+    assert can_open is False
+    assert limit_name == "DEATH_MODE"
+
+
+def test_survival_budget_breach_latches_death_mode():
+    real_limits = PortfolioRiskLimits(initial_equity=10000.0, survival_budget_pct=0.50)
+    engine = RiskEngine(limits=real_limits)
+    signal = make_signal()
+
+    assert engine.death_mode_active is False
+    assert engine.is_death_mode_active is False
+
+    # Equity breaches 50% survival budget (4800 <= 5000)
+    decision = engine.evaluate_trade(signal, current_equity=4800.0, current_positions_count=0, current_exposure=0.0)
+
+    assert decision.approved is False
+    assert decision.rejection_reason == "REJECTED: DEATH MODE ACTIVE. Survival budget breached."
+    assert decision.relevant_limit == "DEATH_MODE"
+    assert engine.death_mode_active is True
+    assert engine.is_death_mode_active is True
+
+
+def test_death_mode_active_latches_permanently():
+    real_limits = PortfolioRiskLimits(initial_equity=10000.0, survival_budget_pct=0.50)
+    engine = RiskEngine(limits=real_limits)
+    signal = make_signal()
+
+    # Trigger breach
+    engine.evaluate_trade(signal, current_equity=4000.0, current_positions_count=0, current_exposure=0.0)
+    assert engine.death_mode_active is True
+
+    # Subsequent trade even if equity hypothetically rebounds
+    decision = engine.evaluate_trade(signal, current_equity=9999.0, current_positions_count=0, current_exposure=0.0)
+    assert decision.approved is False
+    assert decision.rejection_reason == "REJECTED: DEATH MODE ACTIVE. Survival budget breached."
+    assert decision.relevant_limit == "DEATH_MODE"
+    assert engine.death_mode_active is True
+
+
+def test_death_mode_active_property_sync():
+    limits = MagicMock(spec=PortfolioRiskLimits)
+    engine = RiskEngine(limits=limits)
+
+    engine.death_mode_active = True
+    assert engine.is_death_mode_active is True
+    assert engine.death_mode_active is True
+
+    engine.is_death_mode_active = False
+    assert engine.death_mode_active is False
+    assert engine.is_death_mode_active is False
+

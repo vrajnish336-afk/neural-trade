@@ -110,7 +110,11 @@ class DecisionOrchestrator:
         timestamp = latest_bar.timestamp
 
         # Handle flexible calling conventions (with or without as_of timestamp as 3rd arg)
-        if isinstance(arg3, (datetime, str)) and isinstance(arg4, (int, float)):
+        if "current_equity" in kwargs:
+            current_equity = float(kwargs["current_equity"])
+            current_positions_count = int(kwargs.get("current_positions_count", arg4 if isinstance(arg4, (int, float)) else 0))
+            current_exposure = float(kwargs.get("current_exposure", arg5 if isinstance(arg5, (int, float)) else 0.0))
+        elif isinstance(arg3, (datetime, str)) and isinstance(arg4, (int, float)):
             timestamp = arg3 if isinstance(arg3, datetime) else latest_bar.timestamp
             current_equity = float(arg4)
             current_positions_count = int(arg5) if isinstance(arg5, (int, float)) else 0

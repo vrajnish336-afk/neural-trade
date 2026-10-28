@@ -17,8 +17,16 @@ class RiskEngine:
         self.limits = limits
         self.risk_per_trade_pct = risk_per_trade_pct
         self.max_position_value_pct = max_position_value_pct
-        self.is_death_mode_active: bool = False
+        self.death_mode_active: bool = False
         self.death_mode_reason: Optional[str] = None
+
+    @property
+    def is_death_mode_active(self) -> bool:
+        return self.death_mode_active
+
+    @is_death_mode_active.setter
+    def is_death_mode_active(self, val: bool) -> None:
+        self.death_mode_active = bool(val)
         
     def rehydrate_limits(self, closed_positions: list, as_of: Optional[datetime] = None) -> None:
         """Rehydrates the inner PortfolioRiskLimits state from paper closed positions."""
@@ -26,7 +34,7 @@ class RiskEngine:
 
     def manual_reset_death_mode(self) -> None:
         """Manually resets the latched Risk-Off Death Mode state."""
-        self.is_death_mode_active = False
+        self.death_mode_active = False
         self.death_mode_reason = None
         logger.info("Death Mode manually reset by operator.")
         
@@ -40,29 +48,40 @@ class RiskEngine:
         current_loss_streak: int = 0
     ) -> RiskDecision:
         
-        # 0. Latched Death Mode Check
+        # 0. Check survival budget first (Phase 67 Death Mode)
+        if hasattr(self.limits, "is_survival_budget_breached") and self.limits.is_survival_budget_breached(current_equity) is True:
+            self.death_mode_active = True
+            self.death_mode_reason = "Survival budget breached."
+
+        # Optional Drawdown / Loss Streak Death Mode Check if configured
         from app.config import config
         if getattr(config, "DEATH_MODE_ENABLED", False):
             dd_limit = getattr(config, "DEATH_MODE_DRAWDOWN_LIMIT", 0.10)
             streak_limit = getattr(config, "DEATH_MODE_LOSS_STREAK", 5)
             
             if current_drawdown >= dd_limit:
-                self.is_death_mode_active = True
+                self.death_mode_active = True
                 self.death_mode_reason = f"Drawdown ({current_drawdown:.2%}) >= limit ({dd_limit:.2%})"
             elif current_loss_streak >= streak_limit:
-                self.is_death_mode_active = True
+                self.death_mode_active = True
                 self.death_mode_reason = f"Loss streak ({current_loss_streak}) >= limit ({streak_limit})"
 
-        if self.is_death_mode_active:
+        if self.death_mode_active:
             from app.diagnostics.telemetry import telemetry
             from app.diagnostics.models import RejectionReason
             telemetry.record_rejection(RejectionReason.RISK_LIMIT)
+            if self.death_mode_reason and "Drawdown" in self.death_mode_reason:
+                rejection_reason = f"Rejected: Death Mode Active ({self.death_mode_reason})"
+            elif self.death_mode_reason and "Loss streak" in self.death_mode_reason:
+                rejection_reason = f"Rejected: Death Mode Active ({self.death_mode_reason})"
+            else:
+                rejection_reason = "REJECTED: DEATH MODE ACTIVE. Survival budget breached."
             return RiskDecision(
                 approved=False,
                 requested_risk=0.0,
                 allowed_risk=0.0,
                 position_size=0.0,
-                rejection_reason=f"Rejected: Death Mode Active ({self.death_mode_reason or 'Risk-Off Latch'})",
+                rejection_reason=rejection_reason,
                 relevant_limit="DEATH_MODE"
             )
             

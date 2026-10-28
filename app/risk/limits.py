@@ -5,7 +5,17 @@ class PortfolioRiskLimits:
     """
     Tracks and enforces portfolio-level risk limits.
     """
-    def __init__(self, initial_equity: float, max_positions: int = 5, max_exposure_pct: float = 1.0, daily_loss_limit_pct: float = 0.05, loss_streak_threshold: int = 3, cooldown_bars: int = 5, max_drawdown_halt_pct: float = 20.0):
+    def __init__(
+        self, 
+        initial_equity: float, 
+        max_positions: int = 5, 
+        max_exposure_pct: float = 1.0, 
+        daily_loss_limit_pct: float = 0.05, 
+        loss_streak_threshold: int = 3, 
+        cooldown_bars: int = 5, 
+        max_drawdown_halt_pct: float = 20.0,
+        survival_budget_pct: float = 0.50
+    ):
         self.initial_equity = initial_equity
         self.max_positions = max_positions
         self.max_exposure_pct = max_exposure_pct
@@ -13,10 +23,32 @@ class PortfolioRiskLimits:
         self.loss_streak_threshold = loss_streak_threshold
         self.cooldown_bars = cooldown_bars
         self.max_drawdown_halt_pct = max_drawdown_halt_pct  # % — e.g. 20.0 means halt at 20% drawdown
+        self.survival_budget_pct = survival_budget_pct
         
         self.loss_streak = 0
         self.daily_loss = 0.0
         self.cooldown_remaining = 0
+
+    @property
+    def survival_budget_threshold(self) -> float:
+        """The absolute equity threshold below which the portfolio enters Death Mode."""
+        return self.initial_equity * self.survival_budget_pct
+
+    @property
+    def survival_threshold(self) -> float:
+        """Alias for survival_budget_threshold."""
+        return self.survival_budget_threshold
+
+    def is_survival_budget_breached(self, current_equity: float) -> bool:
+        """
+        Returns True if current dynamic equity has breached or fallen to the survival budget threshold.
+        current_equity <= initial_equity * survival_budget_pct
+        """
+        return current_equity <= self.survival_budget_threshold
+
+    def check_survival_budget(self, current_equity: float) -> bool:
+        """Alias for is_survival_budget_breached."""
+        return self.is_survival_budget_breached(current_equity)
         
     def step_bar(self) -> None:
         """Called by the engine on every new bar to decrease cooldown."""
@@ -86,6 +118,9 @@ class PortfolioRiskLimits:
         """
         if current_equity <= 0:
             return False, "current equity depleted.", "EQUITY_DEPLETED"
+
+        if self.is_survival_budget_breached(current_equity):
+            return False, "survival budget breached.", "DEATH_MODE"
 
         if self.cooldown_remaining > 0:
             return False, f"cooldown active for {self.cooldown_remaining} more bars.", "COOLDOWN"
