@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 from datetime import datetime
 from app.core.models import RiskDecision, TradingSignal
 from app.risk.limits import PortfolioRiskLimits
@@ -13,31 +13,129 @@ class RiskEngine:
     Receives a validated TradingSignal and current portfolio state,
     returns a deterministic RiskDecision.
     """
-    def __init__(self, limits: PortfolioRiskLimits, risk_per_trade_pct: float = 0.01, max_position_value_pct: float = 1.0):
+    def __init__(
+        self,
+        limits: PortfolioRiskLimits,
+        risk_per_trade_pct: float = 0.01,
+        max_position_value_pct: float = 1.0,
+        death_mode_store: Optional[Any] = None,
+        portfolio_id: Optional[str] = None,
+        persistence_callback: Optional[Any] = None,
+        **kwargs
+    ):
         self.limits = limits
         self.risk_per_trade_pct = risk_per_trade_pct
         self.max_position_value_pct = max_position_value_pct
-        self.death_mode_active: bool = False
+        self.death_mode_store = death_mode_store or kwargs.get("store") or kwargs.get("persistence_store")
+        self.portfolio_id = portfolio_id or kwargs.get("portfolio_id")
+        self.persistence_callback = persistence_callback or kwargs.get("callback")
+        self._death_mode_active: bool = False
         self.death_mode_reason: Optional[str] = None
+
+        if self.death_mode_store is not None and self.portfolio_id:
+            self.restore_death_mode_state()
+
+    @property
+    def death_mode_active(self) -> bool:
+        return self._death_mode_active
+
+    @death_mode_active.setter
+    def death_mode_active(self, val: bool) -> None:
+        val_bool = bool(val)
+        if val_bool:
+            if not self._death_mode_active:
+                reason = self.death_mode_reason or "Death Mode activated"
+                self.activate_death_mode(reason)
+            else:
+                self._death_mode_active = True
+        else:
+            if self._death_mode_active:
+                self.manual_reset_death_mode()
+            else:
+                self._death_mode_active = False
 
     @property
     def is_death_mode_active(self) -> bool:
-        return self.death_mode_active
+        return self._death_mode_active
 
     @is_death_mode_active.setter
     def is_death_mode_active(self, val: bool) -> None:
-        self.death_mode_active = bool(val)
-        
+        self.death_mode_active = val
+
+    def _persist_death_mode(self, active: bool, reason: Optional[str] = None) -> None:
+        """
+        Persists death mode state to the configured store or callback.
+        Propagates any exception so persistence failures are not swallowed.
+        """
+        if self.persistence_callback is not None:
+            self.persistence_callback(active, reason)
+        elif self.death_mode_store is not None:
+            if hasattr(self.death_mode_store, "set_death_mode_state"):
+                self.death_mode_store.set_death_mode_state(
+                    portfolio_id=self.portfolio_id or "default",
+                    active=active,
+                    reason=reason
+                )
+            elif hasattr(self.death_mode_store, "save_death_mode_state"):
+                self.death_mode_store.save_death_mode_state(
+                    portfolio_id=self.portfolio_id or "default",
+                    active=active,
+                    reason=reason
+                )
+            elif callable(self.death_mode_store):
+                self.death_mode_store(active, reason)
+
+    def restore_death_mode_state(self) -> None:
+        """Restores saved death mode latch from store if configured."""
+        if not self.death_mode_store or not self.portfolio_id:
+            return
+        try:
+            state = None
+            if hasattr(self.death_mode_store, "get_death_mode_state"):
+                state = self.death_mode_store.get_death_mode_state(self.portfolio_id)
+            elif hasattr(self.death_mode_store, "load_death_mode_state"):
+                state = self.death_mode_store.load_death_mode_state(self.portfolio_id)
+
+            if state and (state.get("active") or state.get("is_active")):
+                self._death_mode_active = True
+                self.death_mode_reason = state.get("reason") or "Restored persistent Death Mode latch"
+                logger.info(
+                    "Restored persistent Death Mode latch for portfolio '%s': %s",
+                    self.portfolio_id, self.death_mode_reason
+                )
+        except Exception as e:
+            logger.error("Failed to restore death mode state for portfolio '%s': %s", self.portfolio_id, e)
+            raise
+
+    def activate_death_mode(self, reason: str = "Survival budget breached.") -> None:
+        """
+        Single authoritative method for all Death Mode activation paths.
+        Sets the in-memory latch and reason, and persists the active latch.
+        """
+        self._death_mode_active = True
+        self.death_mode_reason = reason
+        try:
+            self._persist_death_mode(active=True, reason=reason)
+        except Exception as e:
+            logger.critical("Failed to persist Death Mode activation for portfolio '%s': %s", self.portfolio_id, e)
+            raise
+        logger.critical("Death Mode activated: %s", reason)
+
     def rehydrate_limits(self, closed_positions: list, as_of: Optional[datetime] = None) -> None:
         """Rehydrates the inner PortfolioRiskLimits state from paper closed positions."""
         self.limits.rehydrate_from_paper_ledger(closed_positions, as_of=as_of)
 
     def manual_reset_death_mode(self) -> None:
-        """Manually resets the latched Risk-Off Death Mode state."""
-        self.death_mode_active = False
+        """
+        Manually resets the latched Risk-Off Death Mode state.
+        Persists inactive state. If persistence fails, the latch remains active
+        and the error is propagated to prevent unsafe trading.
+        """
+        self._persist_death_mode(active=False, reason="Manual operator reset")
+        self._death_mode_active = False
         self.death_mode_reason = None
         logger.info("Death Mode manually reset by operator.")
-        
+
     def evaluate_trade(
         self, 
         signal: TradingSignal, 
@@ -48,10 +146,29 @@ class RiskEngine:
         current_loss_streak: int = 0
     ) -> RiskDecision:
         
-        # 0. Check survival budget first (Phase 67 Death Mode)
+        # 0. If Death Mode is already latched, reject immediately
+        if self._death_mode_active:
+            from app.diagnostics.telemetry import telemetry
+            from app.diagnostics.models import RejectionReason
+            telemetry.record_rejection(RejectionReason.RISK_LIMIT)
+            if self.death_mode_reason and "Drawdown" in self.death_mode_reason:
+                rejection_reason = f"Rejected: Death Mode Active ({self.death_mode_reason})"
+            elif self.death_mode_reason and "Loss streak" in self.death_mode_reason:
+                rejection_reason = f"Rejected: Death Mode Active ({self.death_mode_reason})"
+            else:
+                rejection_reason = "REJECTED: DEATH MODE ACTIVE. Survival budget breached."
+            return RiskDecision(
+                approved=False,
+                requested_risk=0.0,
+                allowed_risk=0.0,
+                position_size=0.0,
+                rejection_reason=rejection_reason,
+                relevant_limit="DEATH_MODE"
+            )
+
+        # Check survival budget first (Phase 67 Death Mode)
         if hasattr(self.limits, "is_survival_budget_breached") and self.limits.is_survival_budget_breached(current_equity) is True:
-            self.death_mode_active = True
-            self.death_mode_reason = "Survival budget breached."
+            self.activate_death_mode("Survival budget breached.")
 
         # Optional Drawdown / Loss Streak Death Mode Check if configured
         from app.config import config
@@ -60,13 +177,11 @@ class RiskEngine:
             streak_limit = getattr(config, "DEATH_MODE_LOSS_STREAK", 5)
             
             if current_drawdown >= dd_limit:
-                self.death_mode_active = True
-                self.death_mode_reason = f"Drawdown ({current_drawdown:.2%}) >= limit ({dd_limit:.2%})"
+                self.activate_death_mode(f"Drawdown ({current_drawdown:.2%}) >= limit ({dd_limit:.2%})")
             elif current_loss_streak >= streak_limit:
-                self.death_mode_active = True
-                self.death_mode_reason = f"Loss streak ({current_loss_streak}) >= limit ({streak_limit})"
+                self.activate_death_mode(f"Loss streak ({current_loss_streak}) >= limit ({streak_limit})")
 
-        if self.death_mode_active:
+        if self._death_mode_active:
             from app.diagnostics.telemetry import telemetry
             from app.diagnostics.models import RejectionReason
             telemetry.record_rejection(RejectionReason.RISK_LIMIT)

@@ -402,6 +402,14 @@ CREATE TABLE IF NOT EXISTS paper_equity_snapshots (
     unrealized_pnl REAL DEFAULT 0.0,
     FOREIGN KEY(portfolio_id) REFERENCES paper_portfolios(portfolio_id)
 );
+
+CREATE TABLE IF NOT EXISTS paper_death_mode_state (
+    portfolio_id TEXT PRIMARY KEY,
+    active BOOLEAN NOT NULL,
+    reason TEXT,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(portfolio_id) REFERENCES paper_portfolios(portfolio_id)
+);
 """
 
 def init_db():

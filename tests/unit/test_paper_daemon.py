@@ -341,3 +341,152 @@ def test_daemon_death_mode_survival_budget_halt(temp_db, mock_data_provider, cap
     critical_records = [rec for rec in caplog.records if rec.levelno == logging.CRITICAL]
     assert any("SYSTEM DEAD: SURVIVAL BUDGET BREACHED" in rec.getMessage() for rec in critical_records)
 
+
+def test_daemon_startup_restores_death_mode_and_halts_new_entries(temp_db, mock_data_provider, caplog):
+    """
+    Verifies that during daemon setup, the saved Death Mode latch is restored from SQLite
+    before any market-data evaluation or order entry.
+    Verifies that the daemon halts immediately and no new entries are evaluated or executed,
+    even if equity is restored.
+    """
+    import logging
+    caplog.set_level(logging.CRITICAL)
+
+    portfolio_id = "test_restore_portfolio"
+    # Pre-seed portfolio and an active Death Mode latch directly into the database
+    with sqlite3.connect(temp_db) as conn:
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """
+            INSERT INTO paper_portfolios (portfolio_id, initial_equity, current_equity, current_cash, created_at, updated_at)
+            VALUES (?, 10000.0, 10000.0, 10000.0, ?, ?)
+            """,
+            (portfolio_id, now, now)
+        )
+        conn.execute(
+            """
+            INSERT INTO paper_death_mode_state (portfolio_id, active, reason, updated_at)
+            VALUES (?, 1, 'Survival budget breached.', ?)
+            """,
+            (portfolio_id, now)
+        )
+        conn.commit()
+
+    daemon = PaperTradingDaemon(
+        symbols=["BTC/USDT"],
+        db_path=temp_db,
+        data_provider=mock_data_provider,
+        portfolio_id=portfolio_id,
+        initial_equity=10000.0,
+        poll_interval=0.01,
+        backoff_seconds=0.01
+    )
+    daemon.setup()
+
+    # 1. State must be restored before any market iterations
+    assert daemon.risk_engine.death_mode_active is True
+    assert daemon.risk_engine.death_mode_reason == "Survival budget breached."
+
+    # 2. Run iteration: daemon must halt before evaluating new entries
+    summary = daemon.run_iteration()
+    assert daemon._running is False
+    assert len(summary["executions"]) == 0
+    assert len(summary["decisions"]) == 0
+
+    critical_records = [rec for rec in caplog.records if rec.levelno == logging.CRITICAL]
+    assert any("SYSTEM DEAD: SURVIVAL BUDGET BREACHED" in rec.getMessage() for rec in critical_records)
+
+
+def test_daemon_breach_persists_and_blocks_after_restart(temp_db, mock_data_provider):
+    """
+    Full end-to-end restart persistence test:
+    1. Daemon runs iteration, encounters breach, activates and persists Death Mode latch.
+    2. Process terminates (daemon stops).
+    3. Fresh daemon instance starts up against the same DB file.
+    4. Restored daemon halts and blocks new entries even if equity has recovered.
+    """
+    portfolio_id = "test_e2e_restart_portfolio"
+    daemon1 = PaperTradingDaemon(
+        symbols=["BTC/USDT"],
+        db_path=temp_db,
+        data_provider=mock_data_provider,
+        portfolio_id=portfolio_id,
+        initial_equity=10000.0,
+        poll_interval=0.01,
+        backoff_seconds=0.01
+    )
+    daemon1.setup()
+
+    # Artificially breach survival budget ($4000 <= $5000)
+    with sqlite3.connect(temp_db) as conn:
+        conn.execute(
+            "UPDATE paper_portfolios SET current_equity = 4000.0, current_cash = 4000.0 WHERE portfolio_id = ?",
+            (portfolio_id,)
+        )
+        conn.commit()
+
+    daemon1.run_iteration()
+    assert daemon1._running is False
+    assert daemon1.risk_engine.death_mode_active is True
+
+    # Verify latch was written to the persistent database
+    with sqlite3.connect(temp_db) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT active, reason FROM paper_death_mode_state WHERE portfolio_id = ?", (portfolio_id,))
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == 1
+        assert "Survival budget breached" in row[1]
+
+    # Rebound equity back to $10,000 in DB
+    with sqlite3.connect(temp_db) as conn:
+        conn.execute(
+            "UPDATE paper_portfolios SET current_equity = 10000.0, current_cash = 10000.0 WHERE portfolio_id = ?",
+            (portfolio_id,)
+        )
+        conn.commit()
+
+    # Restart: Create a completely new daemon instance pointing to the same DB
+    daemon2 = PaperTradingDaemon(
+        symbols=["BTC/USDT"],
+        db_path=temp_db,
+        data_provider=mock_data_provider,
+        portfolio_id=portfolio_id,
+        initial_equity=10000.0,
+        poll_interval=0.01,
+        backoff_seconds=0.01
+    )
+    daemon2.setup()
+
+    # Latch must be active on restart
+    assert daemon2.risk_engine.death_mode_active is True
+
+    # Running iteration halts and blocks new entry evaluation despite recovered equity
+    summary = daemon2.run_iteration()
+    assert daemon2._running is False
+    assert len(summary["executions"]) == 0
+    assert len(summary["decisions"]) == 0
+
+    # Manual reset through daemon updates DB and allows execution
+    daemon2.manual_reset_death_mode()
+    assert daemon2.risk_engine.death_mode_active is False
+
+    with sqlite3.connect(temp_db) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT active FROM paper_death_mode_state WHERE portfolio_id = ?", (portfolio_id,))
+        assert cursor.fetchone()[0] == 0
+
+    # Next daemon restart is now clean
+    daemon3 = PaperTradingDaemon(
+        symbols=["BTC/USDT"],
+        db_path=temp_db,
+        data_provider=mock_data_provider,
+        portfolio_id=portfolio_id,
+        initial_equity=10000.0,
+        poll_interval=0.01,
+        backoff_seconds=0.01
+    )
+    daemon3.setup()
+    assert daemon3.risk_engine.death_mode_active is False
+
+

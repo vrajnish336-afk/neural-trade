@@ -289,7 +289,22 @@ class PaperTradingDaemon:
         self.risk_limits.rehydrate_from_paper_ledger(closed_trades)
 
         # 4. Authoritative pre-trade RiskEngine
-        self.risk_engine = RiskEngine(limits=self.risk_limits, risk_per_trade_pct=self.risk_pct)
+        self.risk_engine = RiskEngine(
+            limits=self.risk_limits,
+            risk_per_trade_pct=self.risk_pct,
+            death_mode_store=self.paper_repo,
+            portfolio_id=self.portfolio_id
+        )
+
+        # Restore saved Death Mode state before any market-data evaluation or order entry
+        saved_dm = self.paper_repo.get_death_mode_state(self.portfolio_id)
+        if saved_dm and saved_dm.get("active"):
+            self.risk_engine.death_mode_active = True
+            self.risk_engine.death_mode_reason = saved_dm.get("reason") or "Restored persistent Death Mode latch"
+            logger.critical(
+                "Restored persistent Death Mode latch for portfolio '%s': %s",
+                self.portfolio_id, self.risk_engine.death_mode_reason
+            )
 
         # 5. Streaming paper execution broker
         self.broker = StreamingPaperBroker(
@@ -351,6 +366,13 @@ class PaperTradingDaemon:
         """Triggers graceful termination of the daemon loop."""
         self._running = False
 
+    def manual_reset_death_mode(self) -> None:
+        """Manually resets Death Mode on the risk engine and persistent store."""
+        if self.risk_engine:
+            self.risk_engine.manual_reset_death_mode()
+        elif self.paper_repo:
+            self.paper_repo.set_death_mode_state(self.portfolio_id, active=False, reason="Manual operator reset")
+
     def _sleep_interruptible(self, seconds: float) -> None:
         """Sleeps in small slices to guarantee near-instantaneous response to shutdown signals."""
         end_time = time.time() + seconds
@@ -408,15 +430,14 @@ class PaperTradingDaemon:
 
             # Phase 67 — Death Mode (Survival Budget) Halt Check
             if self.risk_limits.is_survival_budget_breached(current_equity):
-                self.risk_engine.death_mode_active = True
-                self.risk_engine.death_mode_reason = "Survival budget breached."
+                self.risk_engine.activate_death_mode("Survival budget breached.")
 
             if getattr(self.risk_engine, "death_mode_active", False):
                 logger.critical("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
                 logger.critical("SYSTEM DEAD: SURVIVAL BUDGET BREACHED")
                 logger.critical(
-                    "Dynamic equity $%.2f breached survival threshold $%.2f. Permanently halting trading daemon.",
-                    current_equity, getattr(self.risk_limits, "survival_budget_threshold", 0.0)
+                    "Death Mode latch is active (%s). Halting trading daemon before new entry evaluation.",
+                    getattr(self.risk_engine, "death_mode_reason", "Survival budget breached")
                 )
                 logger.critical("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
                 self.stop()

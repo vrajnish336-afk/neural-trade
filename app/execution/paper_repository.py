@@ -1,7 +1,7 @@
 import sqlite3
 import uuid
 import logging
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
 import hashlib
 
@@ -457,3 +457,100 @@ class PaperRepository:
                         (portfolio_id,)
                     )
                 return cursor.fetchall()
+
+    def set_death_mode_state(
+        self,
+        portfolio_id: str,
+        active: bool,
+        reason: Optional[str] = None,
+        updated_at: Optional[datetime] = None
+    ) -> None:
+        """
+        Atomically persists the per-portfolio Death Mode state.
+        Uses parameterized SQL and atomic upsert (ON CONFLICT DO UPDATE).
+        Raises PaperRepositoryException on failure.
+        """
+        now = updated_at.isoformat() if updated_at else datetime.now(timezone.utc).isoformat()
+        active_int = 1 if active else 0
+        from contextlib import closing
+        try:
+            with closing(self._get_conn()) as conn:
+                with conn:
+                    try:
+                        conn.execute(
+                            """
+                            INSERT INTO paper_death_mode_state (portfolio_id, active, reason, updated_at)
+                            VALUES (?, ?, ?, ?)
+                            ON CONFLICT(portfolio_id) DO UPDATE SET
+                                active = excluded.active,
+                                reason = excluded.reason,
+                                updated_at = excluded.updated_at
+                            """,
+                            (portfolio_id, active_int, reason, now)
+                        )
+                    except sqlite3.OperationalError as op_err:
+                        if "no such table" in str(op_err).lower():
+                            conn.execute(
+                                """
+                                CREATE TABLE IF NOT EXISTS paper_death_mode_state (
+                                    portfolio_id TEXT PRIMARY KEY,
+                                    active BOOLEAN NOT NULL,
+                                    reason TEXT,
+                                    updated_at TEXT NOT NULL,
+                                    FOREIGN KEY(portfolio_id) REFERENCES paper_portfolios(portfolio_id)
+                                );
+                                """
+                            )
+                            conn.execute(
+                                """
+                                INSERT INTO paper_death_mode_state (portfolio_id, active, reason, updated_at)
+                                VALUES (?, ?, ?, ?)
+                                ON CONFLICT(portfolio_id) DO UPDATE SET
+                                    active = excluded.active,
+                                    reason = excluded.reason,
+                                    updated_at = excluded.updated_at
+                                """,
+                                (portfolio_id, active_int, reason, now)
+                            )
+                        else:
+                            raise
+        except Exception as e:
+            logger.error("Failed to persist death mode state for portfolio '%s': %s", portfolio_id, e)
+            raise PaperRepositoryException(f"Failed to persist death mode state: {e}") from e
+
+    def get_death_mode_state(self, portfolio_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Loads the per-portfolio Death Mode state.
+        Returns a dict with portfolio_id, active, is_active, reason, updated_at,
+        or None if no state is recorded.
+        """
+        from contextlib import closing
+        try:
+            with closing(self._get_conn()) as conn:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute(
+                        "SELECT portfolio_id, active, reason, updated_at FROM paper_death_mode_state WHERE portfolio_id = ?",
+                        (portfolio_id,)
+                    )
+                    row = cursor.fetchone()
+                except sqlite3.OperationalError as op_err:
+                    if "no such table" in str(op_err).lower():
+                        return None
+                    raise
+                if not row:
+                    return None
+                return {
+                    "portfolio_id": str(row["portfolio_id"]),
+                    "active": bool(row["active"]),
+                    "is_active": bool(row["active"]),
+                    "reason": row["reason"],
+                    "updated_at": row["updated_at"]
+                }
+        except Exception as e:
+            logger.error("Failed to load death mode state for portfolio '%s': %s", portfolio_id, e)
+            raise PaperRepositoryException(f"Failed to load death mode state: {e}") from e
+
+    # Convenient aliases
+    save_death_mode_state = set_death_mode_state
+    load_death_mode_state = get_death_mode_state
